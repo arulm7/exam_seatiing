@@ -15,7 +15,569 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+/* ======================================================
+   HELPER FUNCTIONS FOR SEATING ALLOCATION
+   ====================================================== */
 
+// Helper to get course group (first 5 chars)
+const getCourseGroup = (courseCode) => {
+  if (!courseCode) return "";
+  return courseCode.substring(0, 5);
+};
+
+// Helper to check neighbor safety
+const isSafeNeighbor = (allocatedSeats, row, col, courseGroup) => {
+  // Check left neighbor (same row, col-1)
+  const left = allocatedSeats.find(s => s.row === row && s.col === col - 1);
+  if (left && getCourseGroup(left.course) === courseGroup) return false;
+
+  // Check front neighbor (row-1, same col) - person in front
+  const front = allocatedSeats.find(s => s.row === row - 1 && s.col === col);
+  if (front && getCourseGroup(front.course) === courseGroup) return false;
+
+  return true;
+};
+
+// Helper to validate course consistency (code and name must match)
+const validateCourseConsistency = (courseGroups) => {
+  const validatedGroups = {};
+
+  for (const [courseCode, students] of Object.entries(courseGroups)) {
+    // Group by course name to check consistency
+    const nameGroups = {};
+    students.forEach(student => {
+      const courseName = student["COURSE NAME"] || "";
+      if (!nameGroups[courseName]) nameGroups[courseName] = [];
+      nameGroups[courseName].push(student);
+    });
+
+    // Find the most common course name for this course code
+    let maxCount = 0;
+    let dominantName = "";
+
+    for (const [courseName, studentList] of Object.entries(nameGroups)) {
+      if (studentList.length > maxCount) {
+        maxCount = studentList.length;
+        dominantName = courseName;
+      }
+    }
+
+    // Only keep students with the dominant course name
+    validatedGroups[courseCode] = nameGroups[dominantName] || [];
+
+    // Log any inconsistencies
+    if (Object.keys(nameGroups).length > 1) {
+      console.warn(`Course code ${courseCode} has multiple names:`, Object.keys(nameGroups));
+      console.warn(`Using dominant name: ${dominantName}`);
+    }
+  }
+
+  return validatedGroups;
+};
+
+// Helper to find optimal course combination for 28-32 students with max 7-8 per course
+const findOptimalCourseCombination = (courseGroups, targetStudents) => {
+  const courses = Object.keys(courseGroups).sort((a, b) =>
+    courseGroups[b].length - courseGroups[a].length
+  );
+
+  // Try to find 4 courses that can provide target students with max 8 per course
+  for (let i = 0; i < courses.length - 3; i++) {
+    const course1 = courses[i];
+    const course2 = courses[i + 1];
+    const course3 = courses[i + 2];
+    const course4 = courses[i + 3];
+
+    // Calculate how many students each course can provide (max 8)
+    const available = [
+      Math.min(courseGroups[course1].length, 8),
+      Math.min(courseGroups[course2].length, 8),
+      Math.min(courseGroups[course3].length, 8),
+      Math.min(courseGroups[course4].length, 8)
+    ];
+
+    const totalAvailable = available.reduce((sum, count) => sum + count, 0);
+
+    if (totalAvailable >= targetStudents) {
+      // Distribute students optimally with max 8 per course
+      const distribution = [
+        { course: course1, count: 0, maxAllowed: available[0] },
+        { course: course2, count: 0, maxAllowed: available[1] },
+        { course: course3, count: 0, maxAllowed: available[2] },
+        { course: course4, count: 0, maxAllowed: available[3] }
+      ];
+
+      let remaining = targetStudents;
+
+      // For 28 students: try to give each course 7 students
+      if (targetStudents === 28) {
+        distribution.forEach((dist, idx) => {
+          const allocation = Math.min(7, dist.maxAllowed, remaining);
+          dist.count = allocation;
+          remaining -= allocation;
+        });
+
+        // If we still have remaining, distribute evenly
+        while (remaining > 0) {
+          for (const dist of distribution) {
+            if (remaining <= 0) break;
+            if (dist.count < dist.maxAllowed && dist.count < 8) {
+              dist.count++;
+              remaining--;
+            }
+          }
+        }
+      }
+      // For 30 students: 7,7,8,8 distribution
+      else if (targetStudents === 30) {
+        // First give each course at least 7 if possible
+        distribution.forEach(dist => {
+          const allocation = Math.min(7, dist.maxAllowed, 7);
+          dist.count = allocation;
+          remaining -= allocation;
+        });
+
+        // Then make two courses have 8 students
+        let coursesAt8 = 0;
+        for (const dist of distribution) {
+          if (coursesAt8 < 2 && dist.count === 7 && dist.maxAllowed >= 8) {
+            dist.count = 8;
+            remaining--;
+            coursesAt8++;
+          }
+        }
+
+        // Distribute any remaining
+        while (remaining > 0) {
+          for (const dist of distribution) {
+            if (remaining <= 0) break;
+            if (dist.count < dist.maxAllowed && dist.count < 8) {
+              dist.count++;
+              remaining--;
+            }
+          }
+        }
+      }
+      // For 32 students: try to give each course 8 students
+      else if (targetStudents === 32) {
+        distribution.forEach(dist => {
+          const allocation = Math.min(8, dist.maxAllowed, remaining);
+          dist.count = allocation;
+          remaining -= allocation;
+        });
+      }
+      // For other target numbers
+      else {
+        // Start with minimum allocation
+        distribution.forEach(dist => {
+          const minAllocation = Math.min(6, dist.maxAllowed, remaining);
+          dist.count = minAllocation;
+          remaining -= minAllocation;
+        });
+
+        // Distribute remaining
+        while (remaining > 0) {
+          for (const dist of distribution) {
+            if (remaining <= 0) break;
+            if (dist.count < dist.maxAllowed && dist.count < 8) {
+              dist.count++;
+              remaining--;
+            }
+          }
+        }
+      }
+
+      // Validate that no course has more than 8 students
+      distribution.forEach(dist => {
+        if (dist.count > 8) {
+          console.warn(`Course ${dist.course} has ${dist.count} students, reducing to 8`);
+          dist.count = 8;
+        }
+      });
+
+      // Calculate final total
+      const finalTotal = distribution.reduce((sum, dist) => sum + dist.count, 0);
+
+      if (finalTotal === targetStudents) {
+        return distribution.map(({ course, count }) => ({ course, count }));
+      }
+    }
+  }
+
+  return null;
+};
+
+// Main room allocation function with conditions
+const allocateRoomWithConditions = (roomName, capacity, students, session, exam_date, exam_type, courseNameMap) => {
+  const allocatedSeats = [];
+  const columns = 4;
+  const rows = Math.ceil(capacity / columns);
+  const inserts = [];
+
+  // Group students by course and validate consistency
+  const courseGroups = {};
+  students.forEach(student => {
+    const courseCode = student["COURSE CODE"];
+    if (!courseCode) return;
+    if (!courseGroups[courseCode]) courseGroups[courseCode] = [];
+    courseGroups[courseCode].push(student);
+
+    // Update course name map
+    if (student["COURSE NAME"] && !courseNameMap[courseCode]) {
+      courseNameMap[courseCode] = student["COURSE NAME"];
+    }
+  });
+
+  // Validate course consistency (code + name must match)
+  const validatedGroupsTemp = validateCourseConsistency(courseGroups);
+
+  // Replace courseCode with groupCode internally for allocation
+  const validatedGroups = {};
+  for (const [courseCode, studentsArr] of Object.entries(validatedGroupsTemp)) {
+    const groupCode = getCourseGroup(courseCode);
+    if (!validatedGroups[groupCode]) {
+      validatedGroups[groupCode] = [];
+    }
+    validatedGroups[groupCode].push(...studentsArr);
+  }
+
+  // Determine target number of students for this room
+  let targetStudents;
+  const totalAvailable = Object.values(validatedGroups).reduce((sum, arr) => sum + arr.length, 0);
+
+  if (totalAvailable >= 32 && capacity >= 32) {
+    targetStudents = 32;
+  } else if (totalAvailable >= 30 && capacity >= 30) {
+    targetStudents = 30;
+  } else if (totalAvailable >= 28 && capacity >= 28) {
+    targetStudents = 28;
+  } else {
+    targetStudents = Math.min(totalAvailable, 28, capacity);
+  }
+
+  // Find optimal course combination
+  const courseDistribution = findOptimalCourseCombination(validatedGroups, targetStudents);
+
+  if (!courseDistribution) {
+    // If can't find optimal combination, use whatever is available with max 8 per course
+    const availableCourses = Object.keys(validatedGroups).sort((a, b) =>
+      validatedGroups[b].length - validatedGroups[a].length
+    );
+
+    let remainingStudents = Math.min(targetStudents, totalAvailable);
+    const tempDistribution = [];
+
+    for (const course of availableCourses) {
+      if (remainingStudents <= 0) break;
+      // Max 8 students per course
+      const toTake = Math.min(validatedGroups[course].length, 8, remainingStudents);
+      tempDistribution.push({ course, count: toTake });
+      remainingStudents -= toTake;
+    }
+
+    // Use temp distribution
+    const studentsToAllocate = [];
+    tempDistribution.forEach(dist => {
+      const studentsFromCourse = validatedGroups[dist.course].splice(0, dist.count);
+      studentsFromCourse.forEach(student => {
+        studentsToAllocate.push({ ...student, assignedCourse: dist.course });
+      });
+    });
+
+    // Allocate seats
+    let studentIndex = 0;
+    for (let i = 1; i <= rows && studentIndex < studentsToAllocate.length; i++) {
+      for (let j = 1; j <= columns && studentIndex < studentsToAllocate.length; j++) {
+        if (allocatedSeats.length >= capacity) break;
+
+        // Find safe student
+        let selectedStudent = null;
+        let selectedIdx = -1;
+
+        for (let k = studentIndex; k < studentsToAllocate.length; k++) {
+          const student = studentsToAllocate[k];
+          if (isSafeNeighbor(allocatedSeats, i, j, student.assignedCourse)) {
+            selectedStudent = student;
+            selectedIdx = k;
+            break;
+          }
+        }
+
+        if (!selectedStudent && studentIndex < studentsToAllocate.length) {
+          selectedStudent = studentsToAllocate[studentIndex];
+          selectedIdx = studentIndex;
+        }
+
+        if (selectedStudent) {
+          studentsToAllocate.splice(selectedIdx, 1);
+
+          const examTime = selectedStudent["Time"] || selectedStudent["Exam Time"] || selectedStudent["EXAM TIME"] || null;
+
+          inserts.push([
+            selectedStudent["Reg No."],
+            selectedStudent["Student Name"],
+            selectedStudent["COURSE CODE"],
+            selectedStudent["COURSE NAME"] || courseNameMap[selectedStudent["COURSE CODE"]] || "",
+            session,
+            roomName,
+            i,
+            j,
+            exam_date,
+            exam_type,
+            examTime
+          ]);
+
+          allocatedSeats.push({
+            row: i,
+            col: j,
+            course: selectedStudent["COURSE CODE"],
+            courseName: selectedStudent["COURSE NAME"] || courseNameMap[selectedStudent["COURSE CODE"]] || "",
+            student: selectedStudent["Reg No."],
+            session: session,
+            time: examTime
+          });
+        }
+      }
+    }
+
+    // Return remaining students
+    const remaining = [];
+    Object.keys(validatedGroups).forEach(course => {
+      remaining.push(...validatedGroups[course]);
+    });
+    remaining.push(...studentsToAllocate);
+
+    return { allocatedSeats, remainingStudents: remaining, inserts };
+  }
+
+  // Use the optimal course distribution
+  const studentsToAllocate = [];
+  courseDistribution.forEach(dist => {
+    const studentsFromCourse = validatedGroups[dist.course].splice(0, dist.count);
+    studentsFromCourse.forEach(student => {
+      studentsToAllocate.push({ ...student, assignedCourse: dist.course });
+    });
+  });
+
+  // Verify no course has more than 8 students
+  const courseCounts = {};
+  studentsToAllocate.forEach(student => {
+    courseCounts[student.assignedCourse] = (courseCounts[student.assignedCourse] || 0) + 1;
+  });
+
+  for (const [course, count] of Object.entries(courseCounts)) {
+    if (count > 8) {
+      console.error(`ERROR: Course ${course} has ${count} students, exceeding maximum of 8`);
+      // Remove excess students
+      const excess = count - 8;
+      for (let i = 0; i < excess; i++) {
+        const index = studentsToAllocate.findIndex(s => s.assignedCourse === course);
+        if (index !== -1) {
+          validatedGroups[course].push(studentsToAllocate[index]);
+          studentsToAllocate.splice(index, 1);
+        }
+      }
+    }
+  }
+
+  // Shuffle students within their courses to mix them
+  const shuffledStudents = [];
+  const byCourse = {};
+  studentsToAllocate.forEach(student => {
+    if (!byCourse[student.assignedCourse]) byCourse[student.assignedCourse] = [];
+    byCourse[student.assignedCourse].push(student);
+  });
+
+  // Interleave students from different courses
+  const maxPerCourse = Math.max(...Object.values(byCourse).map(arr => arr.length));
+  for (let i = 0; i < maxPerCourse; i++) {
+    Object.keys(byCourse).forEach(course => {
+      if (byCourse[course][i]) {
+        shuffledStudents.push(byCourse[course][i]);
+      }
+    });
+  }
+
+  // Allocate seats with pattern
+  const PATTERN_MATRIX = [
+    [0, 1, 2, 3], [2, 3, 0, 1], [0, 1, 2, 3], [2, 3, 0, 1],
+    [0, 1, 2, 3], [2, 3, 0, 1], [0, 1, 2, 3]
+  ];
+
+  let studentIndex = 0;
+  for (let i = 1; i <= rows && studentIndex < shuffledStudents.length; i++) {
+    for (let j = 1; j <= columns && studentIndex < shuffledStudents.length; j++) {
+      if (allocatedSeats.length >= capacity) break;
+
+      // Find safe student using pattern-based preference
+      const patternIdx = PATTERN_MATRIX[(i - 1) % 7][(j - 1) % 4];
+      const preferredCourses = courseDistribution.map(d => d.course);
+
+      let selectedStudent = null;
+      let selectedIdx = -1;
+
+      // Try to match pattern
+      for (let k = studentIndex; k < shuffledStudents.length; k++) {
+        const student = shuffledStudents[k];
+        const courseIndex = preferredCourses.indexOf(student.assignedCourse);
+        if (courseIndex % 4 === patternIdx && isSafeNeighbor(allocatedSeats, i, j, student.assignedCourse)) {
+          selectedStudent = student;
+          selectedIdx = k;
+          break;
+        }
+      }
+
+      // Fallback: any safe student
+      if (!selectedStudent) {
+        for (let k = studentIndex; k < shuffledStudents.length; k++) {
+          const student = shuffledStudents[k];
+          if (isSafeNeighbor(allocatedSeats, i, j, student.assignedCourse)) {
+            selectedStudent = student;
+            selectedIdx = k;
+            break;
+          }
+        }
+      }
+
+      // Last resort: take next student
+      if (!selectedStudent && studentIndex < shuffledStudents.length) {
+        selectedStudent = shuffledStudents[studentIndex];
+        selectedIdx = studentIndex;
+      }
+
+      if (selectedStudent) {
+        shuffledStudents.splice(selectedIdx, 1);
+
+        const examTime = selectedStudent["Time"] || selectedStudent["Exam Time"] || selectedStudent["EXAM TIME"] || null;
+        const courseName = selectedStudent["COURSE NAME"] || courseNameMap[selectedStudent["COURSE CODE"]] || "";
+
+        inserts.push([
+          selectedStudent["Reg No."],
+          selectedStudent["Student Name"],
+          selectedStudent["COURSE CODE"],
+          courseName,
+          session,
+          roomName,
+          i,
+          j,
+          exam_date,
+          exam_type,
+          examTime
+        ]);
+
+        allocatedSeats.push({
+          row: i,
+          col: j,
+          course: selectedStudent["COURSE CODE"],
+          courseName: courseName,
+          student: selectedStudent["Reg No."],
+          session: session,
+          time: examTime
+        });
+      }
+    }
+  }
+
+  // Return remaining students
+  const remaining = [];
+  Object.keys(validatedGroups).forEach(course => {
+    remaining.push(...validatedGroups[course]);
+  });
+  remaining.push(...shuffledStudents);
+
+  return { allocatedSeats, remainingStudents: remaining, inserts };
+};
+
+// Function to handle leftover students (Condition 2)
+const handleLeftoverStudents = (roomResults, leftoverStudents, session, exam_date, exam_type, batchedInserts, courseNameMap) => {
+  if (leftoverStudents.length === 0 || leftoverStudents.length >= 28) {
+    return { updatedResults: roomResults, updatedInserts: batchedInserts, finalLeftover: leftoverStudents };
+  }
+
+  // Try to find rooms with exactly 28 students that we can modify
+  for (let i = 0; i < roomResults.length && leftoverStudents.length > 0; i++) {
+    const room = roomResults[i];
+
+    if (room.seats.length === 28) {
+      // Count courses in this room using course groups
+      const courseCounts = {};
+      room.seats.forEach(seat => {
+        const groupCode = getCourseGroup(seat.course);
+        courseCounts[groupCode] = (courseCounts[groupCode] || 0) + 1;
+      });
+
+      // Find a course group with 7 students that doesn't match leftover students' course groups
+      const leftoverGroups = new Set(leftoverStudents.map(s => getCourseGroup(s["COURSE CODE"])));
+      const candidateGroup = Object.keys(courseCounts).find(groupCode =>
+        courseCounts[groupCode] === 7 && !leftoverGroups.has(groupCode)
+      );
+
+      if (candidateGroup) {
+        // Remove 4 students from this course group
+        const seatsToRemove = [];
+        const keptSeats = [];
+
+        for (const seat of room.seats) {
+          if (getCourseGroup(seat.course) === candidateGroup && seatsToRemove.length < 4) {
+            seatsToRemove.push(seat);
+          } else {
+            keptSeats.push(seat);
+          }
+        }
+
+        // Get the actual student objects for the removed seats
+        const removedStudents = seatsToRemove.map(seat => {
+          return {
+            "Reg No.": seat.student,
+            "Student Name": seat.studentName || "Unknown",
+            "COURSE CODE": seat.course,
+            "COURSE NAME": seat.courseName || "",
+            "SESSION": session,
+            "Time": seat.time || null
+          };
+        });
+
+        // Combine leftover students with removed students
+        const combinedStudents = [...leftoverStudents, ...removedStudents];
+
+        // Try to reallocate this room with combined students
+        const tempResult = allocateRoomWithConditions(
+          room.roomNumber,
+          room.totalSeats,
+          combinedStudents,
+          session,
+          exam_date,
+          exam_type,
+          courseNameMap
+        );
+
+        if (tempResult.allocatedSeats.length >= keptSeats.length) {
+          // Success - update the room
+          room.seats = tempResult.allocatedSeats;
+          room.totalSeats = tempResult.allocatedSeats.length;
+          room.rows = Math.ceil(room.totalSeats / 4);
+
+          // Remove old inserts for this room
+          for (let j = batchedInserts.length - 1; j >= 0; j--) {
+            if (batchedInserts[j][5] === room.roomNumber && batchedInserts[j][4] === session) {
+              batchedInserts.splice(j, 1);
+            }
+          }
+
+          // Add new inserts
+          batchedInserts.push(...tempResult.inserts);
+
+          // Update leftover students
+          leftoverStudents = tempResult.remainingStudents;
+
+          console.log(`Redistributed room ${room.roomNumber} to accommodate leftover students`);
+        }
+      }
+    }
+  }
+
+  return { updatedResults: roomResults, updatedInserts: batchedInserts, finalLeftover: leftoverStudents };
+};
 
 /* ======================================================
    POST: GENERATE SEATING (Students + Class Room Excel)
@@ -57,12 +619,10 @@ router.post(
 
       /* ---------- IDENTIFY & NORMALIZE SESSIONS ---------- */
       const studentsBySession = {};
-      const courseNameMap = {}; // Map code to name
+      const courseNameMap = {};
 
       students.forEach(s => {
         let rawSession = s["SESSION"] ? String(s["SESSION"]).trim() : "FN";
-
-        // Normalize Session Value
         let session = "FN";
         const upperRaw = rawSession.toUpperCase();
 
@@ -80,211 +640,97 @@ router.post(
           session = "AN";
         }
 
-        // Store verbose normalized session back in student object
         s["SESSION"] = session;
 
         if (!studentsBySession[session]) {
           studentsBySession[session] = [];
         }
         studentsBySession[session].push(s);
-        if (s["COURSE CODE"] && s["COURSE NAME"] && !courseNameMap[s["COURSE CODE"]]) {
-          courseNameMap[s["COURSE CODE"]] = s["COURSE NAME"];
+
+        // Build course name map
+        const courseCode = s["COURSE CODE"];
+        const courseName = s["COURSE NAME"];
+        if (courseCode && courseName) {
+          // Check for consistency
+          if (courseNameMap[courseCode] && courseNameMap[courseCode] !== courseName) {
+            console.warn(`Course code ${courseCode} has inconsistent names: "${courseNameMap[courseCode]}" vs "${courseName}"`);
+            // Keep the first encountered name
+          } else if (!courseNameMap[courseCode]) {
+            courseNameMap[courseCode] = courseName;
+          }
         }
       });
 
-      // Sort unique sessions so FN comes before AN (F > A)
       const uniqueSessions = Object.keys(studentsBySession).sort((a, b) => b.localeCompare(a));
-
-      /* ---------- CHECK: COURSE STRENGTHS ---------- */
-      const courseStrengthMap = {};
-      students.forEach(s => {
-        const code = s["COURSE CODE"];
-        if (code) courseStrengthMap[code] = (courseStrengthMap[code] || 0) + 1;
-      });
-      //console.log("\n[Capacity Check] Course Strengths:");
-      Object.entries(courseStrengthMap).forEach(([code, count]) => {
-        //console.log(` - ${code}: ${count} students`);
-      });
-
-      /* ---------- PLANNING: OPTIMIZE ROOMS ---------- */
-      // Sort rooms by capacity (Descending) to ensure larger rooms are filled first
-      rooms.sort((a, b) => (Number(b["Capacity"]) || 0) - (Number(a["Capacity"]) || 0));
-
-      /* ---------- CHECK: CAPACITY ANALYSIS ---------- */
-      const totalRoomCapacity = rooms.reduce((sum, r) => sum + (Number(r["Capacity"]) || 0), 0);
-
-      uniqueSessions.forEach(session => {
-        const count = studentsBySession[session] ? studentsBySession[session].length : 0;
-        if (count > totalRoomCapacity) {
-          //console.log(`[Capacity Check] Session ${session}: Students=${count}, Capacity=${totalRoomCapacity} (SHORTAGE)`);
-        } else {
-          //console.log(`[Capacity Check] Session ${session}: Students=${count}, Capacity=${totalRoomCapacity} (OK)`);
-        }
-      });
 
       /* ---------- CLEAR PREVIOUS SEATING FOR THIS DATE/TYPE ---------- */
       await db.promise().query("DELETE FROM exam_allocation WHERE exam_date = ? AND exam_type = ?", [exam_date, exam_type]);
 
       /* ---------- PREPARE GLOBAL STATS ---------- */
       let totalAllocatedStudents = 0;
-      const roomResults = [];
+      let roomResults = [];
       const globalCourseStats = {};
-      const totalStudentsByCourse = {};
       const allUnallocatedStudents = [];
-      const batchedInserts = [];
+      let batchedInserts = [];
 
       const allCodes = new Set(students.map(s => s["COURSE CODE"]).filter(Boolean));
       allCodes.forEach(c => {
         globalCourseStats[c] = 0;
-        totalStudentsByCourse[c] = students.filter(s => s["COURSE CODE"] === c).length;
       });
 
       /* ---------- LOOP THROUGH SESSIONS ---------- */
       for (const session of uniqueSessions) {
-        const sessionStudents = studentsBySession[session];
+        let sessionStudents = [...studentsBySession[session]];
 
-        // Group by course for this session
-        const sessionCourseMap = {};
-        sessionStudents.forEach(s => {
-          const code = s["COURSE CODE"];
-          if (!code) return;
-          if (!sessionCourseMap[code]) sessionCourseMap[code] = [];
-          sessionCourseMap[code].push(s);
-        });
-
-        const sessionCourses = Object.keys(sessionCourseMap).sort((a, b) =>
-          sessionCourseMap[b].length - sessionCourseMap[a].length
+        // Sort rooms by capacity (descending)
+        const sortedRooms = [...rooms].sort((a, b) =>
+          (Number(b["Capacity"]) || 0) - (Number(a["Capacity"]) || 0)
         );
 
-        if (sessionCourses.length === 0) continue;
+        // Allocate students to rooms
+        for (const room of sortedRooms) {
+          if (sessionStudents.length === 0) break;
 
-        // Bucketing for session
-        const buckets = [[], [], [], []];
-        const bucketCounts = [0, 0, 0, 0];
-        for (const c of sessionCourses) {
-          let minIdx = 0;
-          for (let i = 1; i < 4; i++) {
-            if (bucketCounts[i] < bucketCounts[minIdx]) minIdx = i;
-          }
-          buckets[minIdx].push(c);
-          bucketCounts[minIdx] += sessionCourseMap[c].length;
-        }
+          const roomName = String(room["Class Room"]);
+          const capacity = Number(room["Capacity"]);
 
-        /* ---------- ALLOCATE ROOMS FOR SESSION ---------- */
-        for (const r of rooms) {
-          const roomName = String(r["Class Room"]);
-          const capacity = Number(r["Capacity"]);
           if (!roomName || !capacity || capacity <= 0) continue;
 
-          // Check if session still has students
-          if (!sessionCourses.some(c => sessionCourseMap[c].length > 0)) break;
+          // Allocate room with conditions
+          const result = allocateRoomWithConditions(
+            roomName,
+            capacity,
+            sessionStudents,
+            session,
+            exam_date,
+            exam_type,
+            courseNameMap
+          );
 
-          const columns = 4;
-          const rows = Math.ceil(capacity / columns);
-          const roomAllocatedSeats = [];
+          sessionStudents = result.remainingStudents;
+          batchedInserts.push(...result.inserts);
 
-          const PATTERN_MATRIX = [
-            [0, 1, 2, 3], [2, 3, 0, 1], [0, 1, 2, 3], [2, 3, 0, 1],
-            [0, 1, 2, 3], [2, 3, 0, 1], [0, 1, 2, 3]
-          ];
+          if (result.allocatedSeats.length > 0) {
+            // Verify course limits per room using course groups
+            const courseCounts = {};
+            result.allocatedSeats.forEach(seat => {
+              const groupCode = getCourseGroup(seat.course);
+              courseCounts[groupCode] = (courseCounts[groupCode] || 0) + 1;
+              globalCourseStats[seat.course] = (globalCourseStats[seat.course] || 0) + 1;
+              totalAllocatedStudents++;
+            });
 
-          for (let i = 1; i <= rows; i++) {
-            for (let j = 1; j <= columns; j++) {
-              if (roomAllocatedSeats.length >= capacity) break;
-
-              const bucketIdx = PATTERN_MATRIX[(i - 1) % 7][(j - 1) % 4];
-              const bucketCourses = buckets[bucketIdx];
-              let selectedStudent = null;
-
-              // Helper to check neighbors
-              const isSafe = (courseCode) => {
-                // Check Left (i, j-1)
-                const left = roomAllocatedSeats.find(s => s.row === i && s.col === j - 1);
-                if (left && left.course === courseCode) return false;
-                // Check Top/Front (i-1, j) - this prevents "sitting behind same course" (rows increase 1..N)
-                // If I am at row i, row i-1 is physically in front of me in many layouts, 
-                // but effectively "Back" in terms of "person behind me checking my paper" depending on perspective.
-                // User said "not come for that studen back or side".
-                // Checking (i-1) ensures the person in front is different. 
-                const top = roomAllocatedSeats.find(s => s.row === i - 1 && s.col === j);
-                if (top && top.course === courseCode) return false;
-                return true;
-              };
-
-              // 1. Try Preferred Bucket with Safety Check
-              for (const c of bucketCourses) {
-                if (sessionCourseMap[c] && sessionCourseMap[c].length > 0) {
-                  if (isSafe(c)) {
-                    selectedStudent = sessionCourseMap[c].shift();
-                    break;
-                  }
-                }
-              }
-
-              // 2. Fallback: Try ANY largest available course with Safety Check
-              if (!selectedStudent) {
-                for (const c of sessionCourses) {
-                  if (sessionCourseMap[c] && sessionCourseMap[c].length > 0) {
-                    if (isSafe(c)) {
-                      selectedStudent = sessionCourseMap[c].shift();
-                      break;
-                    }
-                  }
-                }
-              }
-
-              if (selectedStudent) {
-                // Use the full verbose session string as the DB session value
-                let dbSession = session;
-
-                // Do NOT append session to room name (User Request: "take the an from the session column... dont add the session with the room number")
-                const renamedRoom = roomName;
-
-                // Capture Exam Time from student fields
-                const examTime = selectedStudent["Time"] || selectedStudent["Exam Time"] || selectedStudent["EXAM TIME"] || null;
-
-                // LOGIC NOTE: 
-                // Since we removed session from room name, distinct sessions (1 & 2) in the same physical room 
-                // will now rely solely on the `session` column for separation in the `processSeatingData` logic. 
-                // We enabled this multi-key grouping in Step 324, so this is safe and correct.
-
-                // Collect for Batch Insert
-                batchedInserts.push([
-                  selectedStudent["Reg No."],
-                  selectedStudent["Student Name"],
-                  selectedStudent["COURSE CODE"],
-                  selectedStudent["COURSE NAME"],
-                  dbSession, // Stores "FN (Session 1)" etc.
-                  renamedRoom, // Clean room name
-
-                  i,
-                  j,
-                  exam_date,
-                  exam_type,
-                  examTime // We can potentially store "Session 1" here if original "time" is empty? No, examTime is for 10:00 AM etc.
-                ]);
-
-                roomAllocatedSeats.push({
-                  row: i, col: j,
-                  course: selectedStudent["COURSE CODE"],
-                  student: selectedStudent["Reg No."],
-                  session: dbSession, // FN, AN
-                  originalSession: session, // 1, 2, 3, 4 (kept in memory for display logic)
-                  time: examTime
-                });
-                globalCourseStats[selectedStudent["COURSE CODE"]]++;
-                totalAllocatedStudents++;
+            // Check if any course group has more than 8 students
+            for (const [groupCode, count] of Object.entries(courseCounts)) {
+              if (count > 8) {
+                console.error(`ERROR in room ${roomName}: Course group ${groupCode} has ${count} students (max 8 allowed)`);
               }
             }
-          }
 
-          if (roomAllocatedSeats.length > 0) {
-            // Ensure immediate response reflects the new verbose session logic
-            // The seat objects already have `session` set to "FN (Session 1)" etc. from the loop above.
-
-            const rawSession = roomAllocatedSeats[0].session; // e.g., "FN (Session 1)"
-            let mapSession = 'FN'; // For filtering
-            let displaySession = rawSession; // Checks out: "FN (Session 1)"
+            // Determine session for filtering
+            const rawSession = session;
+            let mapSession = 'FN';
+            let displaySession = rawSession;
 
             const upperS = rawSession.toUpperCase();
             if (upperS.includes('FN') || upperS.includes('SESSION 1') || upperS.includes('SESSION 2')) {
@@ -294,28 +740,47 @@ router.post(
             }
 
             roomResults.push({
-              roomNumber: roomName, // Clean room name (no suffix)
-              totalSeats: capacity,
-              rows,
-              columns,
-              seats: roomAllocatedSeats.map(s => ({ ...s, session: s.session })),
+              roomNumber: roomName,
+              totalSeats: result.allocatedSeats.length,
+              rows: Math.ceil(result.allocatedSeats.length / 4),
+              columns: 4,
+              seats: result.allocatedSeats,
               session: mapSession,
               displaySession: displaySession,
-              originalRoom: roomName
+              originalRoom: roomName,
+              courseCounts: courseCounts // Add course counts for debugging
             });
           }
         }
 
-        // Collect unallocated for this session
-        sessionCourses.forEach(c => {
-          if (sessionCourseMap[c].length > 0) {
-            allUnallocatedStudents.push(...sessionCourseMap[c].map(s => ({
-              regNo: s["Reg No."], name: s["Student Name"],
-              course: c, courseName: courseNameMap[c], session: s["SESSION"] || session,
-              time: s["Time"] || s["Exam Time"]
-            })));
-          }
-        });
+        // Handle leftover students (Condition 2)
+        if (sessionStudents.length > 0 && sessionStudents.length < 28) {
+          const redistribution = handleLeftoverStudents(
+            roomResults,
+            sessionStudents,
+            session,
+            exam_date,
+            exam_type,
+            batchedInserts,
+            courseNameMap
+          );
+
+          roomResults = redistribution.updatedResults;
+          batchedInserts = redistribution.updatedInserts;
+          sessionStudents = redistribution.finalLeftover;
+        }
+
+        // Add any still unallocated students to global list
+        if (sessionStudents.length > 0) {
+          allUnallocatedStudents.push(...sessionStudents.map(s => ({
+            regNo: s["Reg No."],
+            name: s["Student Name"],
+            course: s["COURSE CODE"],
+            courseName: courseNameMap[s["COURSE CODE"]] || s["COURSE NAME"] || "",
+            session: s["SESSION"] || session,
+            time: s["Time"] || s["Exam Time"] || null
+          })));
+        }
       }
 
       // Execute Batch Insert
@@ -333,11 +798,6 @@ router.post(
       }
 
       /* ---------- WARNINGS & REPORTING ---------- */
-      // Note: Warning table might need to support tracking by exam_date/type if we want history.
-      // For now, we'll just clear valid warnings to keep it simple, or maybe we shouldn't clear?
-      // User requested "from the db remove the auto delete" previously, but warnings are transient.
-      // We will wipe for now as warnings are usually immediate feedback.
-      const warnings = [];
       await db.promise().query(`
         CREATE TABLE IF NOT EXISTS allocation_warnings (
           id INT AUTO_INCREMENT PRIMARY KEY,
@@ -347,8 +807,9 @@ router.post(
       `);
       await db.promise().query("DELETE FROM allocation_warnings");
 
+      const warnings = [];
+
       if (allUnallocatedStudents.length > 0) {
-        // Group by course
         const unByCourse = {};
         allUnallocatedStudents.forEach(s => {
           if (!unByCourse[s.course]) unByCourse[s.course] = [];
@@ -357,21 +818,37 @@ router.post(
 
         for (const code in unByCourse) {
           const list = unByCourse[code];
-          const m = `${list.length} student(s) from ${code} could not be allocated due to room capacity limits.`;
-          const warningObj = { type: 'capacity_shortage', course: code, courseName: courseNameMap[code], message: m, count: list.length, unallocatedList: list };
+          const m = `${list.length} student(s) from ${code} could not be allocated due to room capacity or distribution constraints.`;
+          const warningObj = {
+            type: 'capacity_shortage',
+            course: code,
+            courseName: courseNameMap[code] || code,
+            message: m,
+            count: list.length,
+            unallocatedList: list
+          };
           warnings.push(warningObj);
-          await db.promise().query("INSERT INTO allocation_warnings (type, message, details) VALUES (?, ?, ?)", ['capacity_shortage', m, JSON.stringify(warningObj)]);
+          await db.promise().query(
+            "INSERT INTO allocation_warnings (type, message, details) VALUES (?, ?, ?)",
+            ['capacity_shortage', m, JSON.stringify(warningObj)]
+          );
         }
       }
 
-      const totalCap = rooms.reduce((sum, r) => sum + Number(r["Capacity"] || 0), 0);
-      const util = totalCap > 0 ? (totalAllocatedStudents / totalCap * 100).toFixed(1) : 0;
-      if (parseFloat(util) < 50) {
-        const m = `Room utilization is low (${util}%).`;
-        const warningObj = { type: 'low_utilization', message: m, utilizationRate: parseFloat(util) };
-        warnings.push(warningObj);
-        await db.promise().query("INSERT INTO allocation_warnings (type, message, details) VALUES (?, ?, ?)", ['low_utilization', m, JSON.stringify(warningObj)]);
-      }
+      // Calculate course statistics
+      const totalStudentsByCourse = {};
+      students.forEach(s => {
+        const code = s["COURSE CODE"];
+        if (code) totalStudentsByCourse[code] = (totalStudentsByCourse[code] || 0) + 1;
+      });
+
+      const courseStatsList = Array.from(allCodes).map(c => ({
+        courseCode: c,
+        courseName: courseNameMap[c] || '',
+        allocatedSeats: globalCourseStats[c] || 0,
+        totalStudents: totalStudentsByCourse[c] || 0,
+        unallocated: (totalStudentsByCourse[c] || 0) - (globalCourseStats[c] || 0)
+      }));
 
       const summary = {
         totalStudents: totalAllocatedStudents,
@@ -379,20 +856,20 @@ router.post(
         totalCourses: allCodes.size,
         totalInputStudents: students.length,
         unallocatedCount: allUnallocatedStudents.length,
-        utilizationRate: parseFloat(util),
         examType: exam_type,
         examDate: exam_date
       };
 
-      const courseStatsList = Array.from(allCodes).map(c => ({
-        courseCode: c, courseName: courseNameMap[c] || '', allocatedSeats: globalCourseStats[c],
-        totalStudents: totalStudentsByCourse[c], unallocated: totalStudentsByCourse[c] - globalCourseStats[c]
-      }));
-
       res.json({
         status: warnings.length > 0 ? "success_with_warnings" : "success",
         message: warnings.length > 0 ? `Seating allocation completed with ${warnings.length} warning(s)` : "Seating allocation generated successfully",
-        data: { summary, courseStats: courseStatsList, rooms: roomResults, warnings, unallocatedStudents: allUnallocatedStudents }
+        data: {
+          summary,
+          courseStats: courseStatsList,
+          rooms: roomResults,
+          warnings,
+          unallocatedStudents: allUnallocatedStudents
+        }
       });
 
     } catch (err) {
@@ -435,12 +912,6 @@ router.get("/student/:regno", async (req, res) => {
       });
     }
 
-    // Map sessions for student view too if needed, or leave raw?
-    // User: "in the student sheet it self i will add the exam time and in that it self i will give the session 1 to 4... show the exam time in the student lookup"
-    // I will pass the raw session as stored in DB (1, 2, 3, 4) because the user said "i will give the session 1 to 4".
-    // AND I will add the 'displaySession' helper here too potentially?
-    // Since rows are sent directly, I'll map them.
-
     const mappedRows = rows.map(r => {
       let disp = r.session;
       if (r.session === '1' || r.session === '2') disp = `FN (Session ${r.session})`;
@@ -461,24 +932,17 @@ router.get("/student/:regno", async (req, res) => {
 /* ======================================================
    HELPER: PROCESS SEATING DATA
    ====================================================== */
-/* ======================================================
-   HELPER: PROCESS SEATING DATA
-   ====================================================== */
 async function processSeatingData(rows) {
   if (!rows || rows.length === 0) {
     return null;
   }
 
-  // Calculate stats from rows
   const totalStudents = rows.length;
-  // uniqueRooms count might be tricky if room names are reused across sessions using the same name.
-  // Ideally, uniqueRooms is unique physical rooms.
   const uniqueRooms = new Set(rows.map(r => r.room)).size;
   const uniqueCourses = new Set(rows.map(r => r.course_code)).size;
   const examDate = rows[0].exam_date;
   const examType = rows[0].exam_type;
 
-  // Course Stats
   const courseStatsMap = {};
   rows.forEach(r => {
     if (!courseStatsMap[r.course_code]) {
@@ -488,16 +952,14 @@ async function processSeatingData(rows) {
   });
   const courseStats = Object.values(courseStatsMap);
 
-  // Room Data - Group by Room AND Session to prevent merging different sessions
   const roomsMap = {};
   rows.forEach(row => {
-    // Composite key to separate sessions
     const key = `${row.room}|${row.session}`;
 
     if (!roomsMap[key]) {
       roomsMap[key] = {
         roomNumber: row.room,
-        session: row.session, // Store logic session
+        session: row.session,
         seats: [],
         maxRow: 0,
         maxCol: 0
@@ -507,6 +969,7 @@ async function processSeatingData(rows) {
       row: row.seat_row,
       col: row.seat_column,
       course: row.course_code,
+      courseName: row.course_name,
       student: row.reg_no,
       session: row.session,
       time: row.exam_time
@@ -525,9 +988,7 @@ async function processSeatingData(rows) {
 
     const rawSession = r.session || 'FN';
 
-    // Determine Filterable Session (FN/AN) and Display Session from the stored string
-    // Stored string might be: "FN (Session 1)", "FN", "1", "AN (Session 3)", etc.
-    let mappedSession = 'FN'; // Default
+    let mappedSession = 'FN';
     let displaySession = rawSession;
 
     const upperS = rawSession.toUpperCase();
@@ -543,14 +1004,8 @@ async function processSeatingData(rows) {
       rows: finalRows,
       columns: finalCols,
       seats: r.seats,
-
-      // The frontend uses 'session' for filtering (expected: FN or AN)
       session: mappedSession,
-
-      // The frontend uses 'displaySession' for UI (e.g. "FN (Session 1)")
-      // Since we are storing the verbose string in DB now, rawSession IS the displaySession.
       displaySession: displaySession,
-
       originalRoom: r.roomNumber
     };
   });
@@ -573,7 +1028,6 @@ async function processSeatingData(rows) {
    ====================================================== */
 router.get("/current-seating", async (req, res) => {
   try {
-    // Fetch latest exam details
     const [latest] = await db.promise().query("SELECT exam_date, exam_type FROM exam_allocation ORDER BY exam_date DESC LIMIT 1");
 
     if (latest.length === 0) {
@@ -584,7 +1038,6 @@ router.get("/current-seating", async (req, res) => {
     const dateObj = new Date(exam_date);
     const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
 
-    // Fetch data for this latest plan
     const [rows] = await db.promise().query(
       "SELECT * FROM exam_allocation WHERE exam_date = ? AND exam_type = ?",
       [dateStr, exam_type]
@@ -592,7 +1045,6 @@ router.get("/current-seating", async (req, res) => {
 
     const processed = await processSeatingData(rows);
 
-    // Fetch Warnings (legacy/global for now)
     const [warningRows] = await db.promise().query("SELECT * FROM allocation_warnings");
     const warnings = warningRows.map(w => ({ type: w.type, message: w.message, ...w.details }));
     let unallocatedStudents = [];
@@ -642,7 +1094,6 @@ router.get("/view-seating", async (req, res) => {
 
     const processed = await processSeatingData(rows);
 
-    // We don't link warnings to historical plans yet, so send empty or check if it matches current
     const warnings = [];
     const unallocatedStudents = [];
 
@@ -674,7 +1125,6 @@ router.delete("/clear-seating", async (req, res) => {
       });
     }
 
-    // Check if the seating plan exists
     const [rows] = await db.promise().query(
       "SELECT COUNT(*) as count FROM exam_allocation WHERE exam_date = ? AND exam_type = ?",
       [date, type]
@@ -686,14 +1136,10 @@ router.delete("/clear-seating", async (req, res) => {
       });
     }
 
-    // Delete the specific seating plan
     await db.promise().query(
       "DELETE FROM exam_allocation WHERE exam_date = ? AND exam_type = ?",
       [date, type]
     );
-
-    // Note: We're keeping allocation_warnings as they're global/transient
-    // If you want to link warnings to specific plans in the future, update this
 
     res.json({
       message: `Seating plan for ${type} on ${date} deleted successfully`,

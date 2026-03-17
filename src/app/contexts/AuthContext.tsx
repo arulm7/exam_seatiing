@@ -10,14 +10,20 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return localStorage.getItem('isAuthenticated') === 'true';
+  });
+  const [isAdmin, setIsAdmin] = useState(() => {
+    return localStorage.getItem('isAdmin') === 'true';
+  });
 
   const login = async (email: string, password: string): Promise<boolean> => {
     // Mock authentication - in real app, call backend
     if (email === 'admin@university.edu' && password === 'admin') {
       setIsAuthenticated(true);
       setIsAdmin(true);
+      localStorage.setItem('isAuthenticated', 'true');
+      localStorage.setItem('isAdmin', 'true');
       return true;
     }
     return false;
@@ -26,6 +32,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setIsAuthenticated(false);
     setIsAdmin(false);
+    localStorage.removeItem('isAuthenticated');
+    localStorage.removeItem('isAdmin');
   };
 
   return (
