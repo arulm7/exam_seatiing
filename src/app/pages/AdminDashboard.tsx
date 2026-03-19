@@ -9,7 +9,9 @@ import * as XLSX from 'xlsx';
 
 interface UploadStatus {
     students: 'ready' | 'uploaded' | 'error';
+    mcqStudents: 'ready' | 'uploaded' | 'error';
     rooms: 'ready' | 'uploaded' | 'error';
+    mcqRooms: 'ready' | 'uploaded' | 'error';
     examDate: 'ready' | 'set' | 'error';
 }
 
@@ -50,6 +52,7 @@ interface Room {
     session?: string;
     displaySession?: string;
     originalRoom?: string;
+    examMode?: string;
 }
 
 // 7 ROWS × 4 COLUMNS (28 seats)
@@ -74,12 +77,16 @@ type Tab = 'create' | 'courses' | 'preview' | 'history';
 export function AdminDashboard() {
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>({
         students: 'ready',
+        mcqStudents: 'ready',
         rooms: 'ready',
+        mcqRooms: 'ready',
         examDate: 'ready',
     });
     const [examDate, setExamDate] = useState<string>('');
     const [studentFile, setStudentFile] = useState<File | null>(null);
+    const [mcqStudentFile, setMcqStudentFile] = useState<File | null>(null);
     const [roomFile, setRoomFile] = useState<File | null>(null);
+    const [mcqRoomFile, setMcqRoomFile] = useState<File | null>(null);
     const [seatingGenerated, setSeatingGenerated] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string>('');
@@ -96,6 +103,8 @@ export function AdminDashboard() {
     const [clearedMessage, setClearedMessage] = useState<string>('');
     const [examType, setExamType] = useState<string>('');
     const [sessionFilter, setSessionFilter] = useState<'ALL' | 'FN' | 'AN' | '1' | '2' | '3' | '4'>('ALL');
+    const [examModeFilter, setExamModeFilter] = useState<'ALL' | 'NORMAL' | 'MCQ'>('ALL');
+    const [breakdownModeFilter, setBreakdownModeFilter] = useState<'ALL' | 'NORMAL' | 'MCQ'>('ALL');
 
     // Helper to filter rooms based on session
     const isRoomInSession = (room: Room, filter: string) => {
@@ -245,9 +254,37 @@ export function AdminDashboard() {
         }
     };
 
+    const handleMcqStudentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            if (!file.name.match(/\.(xlsx|xls)$/i)) {
+                setUploadStatus(prev => ({ ...prev, mcqStudents: 'error' }));
+                setError('MCQ Student file must be Excel format (.xlsx or .xls)');
+                return;
+            }
+            setMcqStudentFile(file);
+            setUploadStatus(prev => ({ ...prev, mcqStudents: 'uploaded' }));
+            setError('');
+        }
+    };
+
+    const handleMcqRoomUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            if (!file.name.match(/\.(xlsx|xls)$/i)) {
+                setUploadStatus(prev => ({ ...prev, mcqRooms: 'error' }));
+                setError('MCQ Room file must be Excel format (.xlsx or .xls)');
+                return;
+            }
+            setMcqRoomFile(file);
+            setUploadStatus(prev => ({ ...prev, mcqRooms: 'uploaded' }));
+            setError('');
+        }
+    };
+
     const generateSeating = async () => {
-        if (!examDate || !examType || !studentFile || !roomFile) {
-            setError('Please fill all required fields');
+        if (!examDate || !examType || (!studentFile && !mcqStudentFile) || (!roomFile && !mcqRoomFile)) {
+            setError('Please fill all required fields and provide at least one set of files (NORMAL or MCQ)');
             return;
         }
 
@@ -274,8 +311,10 @@ export function AdminDashboard() {
             const formData = new FormData();
             formData.append('exam_date', examDate);
             formData.append('exam_type', examType);
-            formData.append('students', studentFile);
-            formData.append('rooms', roomFile);
+            if (studentFile) formData.append('normal_students', studentFile);
+            if (roomFile) formData.append('normal_rooms', roomFile);
+            if (mcqStudentFile) formData.append('mcq_students', mcqStudentFile);
+            if (mcqRoomFile) formData.append('mcq_rooms', mcqRoomFile);
 
             const response = await generateSeatingPlan(formData);
 
@@ -333,7 +372,9 @@ export function AdminDashboard() {
                 setUnallocatedStudents([]);
                 setUploadStatus({
                     students: 'ready',
+                    mcqStudents: 'ready',
                     rooms: 'ready',
+                    mcqRooms: 'ready',
                     examDate: 'ready',
                 });
                 setExamDate('');
@@ -353,18 +394,23 @@ export function AdminDashboard() {
     };
 
     const getExportData = () => {
-        const headers = ['S.No', 'Course Code', 'Course Name', 'Total', 'Allocated', 'Unallocated', 'Room Breakdown'];
+        const headers = ['S.No', 'Course Code', 'Course Name', 'Exam Mode', 'Total', 'Allocated', 'Unallocated', 'Room Breakdown'];
         const rows = courseStats.map((course, index) => {
             const courseRooms: string[] = [];
+            let examMode = 'DESCRIPTIVE';
             rooms.forEach(r => {
                 const count = r.seats.filter(s => s.course === course.courseCode).length;
-                if (count > 0) courseRooms.push(`${r.roomNumber} (${count})`);
+                if (count > 0) {
+                    courseRooms.push(`${r.roomNumber} (${count})`);
+                    if (r.examMode) examMode = r.examMode === 'NORMAL' ? 'DESCRIPTIVE' : r.examMode;
+                }
             });
 
             return [
                 (index + 1).toString(),
                 course.courseCode,
                 course.courseName,
+                examMode,
                 (course.totalStudents || 0).toString(),
                 course.allocatedSeats.toString(),
                 (course.unallocated || 0).toString(),
@@ -1614,7 +1660,7 @@ export function AdminDashboard() {
                             transition={{ delay: 0.1 }}
                             className="grid md:grid-cols-2 gap-6 mb-6"
                         >
-                            {/* Student Nominal Roll Upload */}
+                            {/* Normal Student Nominal Roll Upload */}
                             <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="flex items-center gap-3">
@@ -1622,8 +1668,8 @@ export function AdminDashboard() {
                                             <Users className="size-6 text-blue-600" />
                                         </div>
                                         <div>
-                                            <h3 className="font-semibold text-gray-900">Student Nominal Roll</h3>
-                                            <p className="text-sm text-gray-600">Upload Excel file with student data</p>
+                                            <h3 className="font-semibold text-gray-900">Descriptive Students</h3>
+                                            <p className="text-sm text-gray-600">Upload Excel file</p>
                                         </div>
                                     </div>
                                     {studentFile && (
@@ -1638,33 +1684,67 @@ export function AdminDashboard() {
                                 </div>
 
                                 <label className="block">
-                                    <div className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${uploadStatus.students === 'uploaded'
+                                    <div className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${uploadStatus.students === 'uploaded'
                                         ? 'border-green-300 bg-green-50'
                                         : uploadStatus.students === 'error'
                                             ? 'border-red-300 bg-red-50'
                                             : 'border-gray-300 hover:border-indigo-400 hover:bg-indigo-50'
                                         }`}>
-                                        <Upload className={`size-8 mx-auto mb-2 ${uploadStatus.students === 'uploaded' ? 'text-green-600' : 'text-gray-400'
+                                        <Upload className={`size-6 mx-auto mb-2 ${uploadStatus.students === 'uploaded' ? 'text-green-600' : 'text-gray-400'
                                             }`} />
                                         <p className="text-sm font-medium text-gray-700">
                                             {uploadStatus.students === 'uploaded'
                                                 ? `✓ ${studentFile?.name}`
-                                                : 'Drop file or click to upload'}
-                                        </p>
-                                        <p className="text-xs text-gray-500 mt-1">
-                                            Required columns: Reg No., Student Name, COURSE CODE, COURSE NAME, SESSION
+                                                : 'Drop file or click'}
                                         </p>
                                     </div>
-                                    <input
-                                        type="file"
-                                        accept=".xlsx,.xls"
-                                        onChange={handleStudentUpload}
-                                        className="hidden"
-                                    />
+                                    <input type="file" accept=".xlsx,.xls" onChange={handleStudentUpload} className="hidden" />
                                 </label>
                             </div>
 
-                            {/* Room Details Upload */}
+                            {/* MCQ Student Nominal Roll Upload */}
+                            <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
+                                <div className="flex items-center justify-between mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2 bg-pink-100 rounded-lg">
+                                            <Users className="size-6 text-pink-600" />
+                                        </div>
+                                        <div>
+                                            <h3 className="font-semibold text-gray-900">MCQ Students</h3>
+                                            <p className="text-sm text-gray-600">Upload Excel file</p>
+                                        </div>
+                                    </div>
+                                    {mcqStudentFile && (
+                                        <button
+                                            onClick={(e) => { e.preventDefault(); setMcqStudentFile(null); setUploadStatus(p => ({ ...p, mcqStudents: 'ready' })); }}
+                                            className="text-gray-400 hover:text-red-500 transition-colors"
+                                            title="Remove file"
+                                        >
+                                            <Trash2 className="size-4" />
+                                        </button>
+                                    )}
+                                </div>
+
+                                <label className="block">
+                                    <div className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${uploadStatus.mcqStudents === 'uploaded'
+                                        ? 'border-green-300 bg-green-50'
+                                        : uploadStatus.mcqStudents === 'error'
+                                            ? 'border-red-300 bg-red-50'
+                                            : 'border-gray-300 hover:border-pink-400 hover:bg-pink-50'
+                                        }`}>
+                                        <Upload className={`size-6 mx-auto mb-2 ${uploadStatus.mcqStudents === 'uploaded' ? 'text-green-600' : 'text-gray-400'
+                                            }`} />
+                                        <p className="text-sm font-medium text-gray-700">
+                                            {uploadStatus.mcqStudents === 'uploaded'
+                                                ? `✓ ${mcqStudentFile?.name}`
+                                                : 'Drop file or click'}
+                                        </p>
+                                    </div>
+                                    <input type="file" accept=".xlsx,.xls" onChange={handleMcqStudentUpload} className="hidden" />
+                                </label>
+                            </div>
+
+                            {/* Normal Room Details Upload */}
                             <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="flex items-center gap-3">
@@ -1672,8 +1752,8 @@ export function AdminDashboard() {
                                             <FileSpreadsheet className="size-6 text-purple-600" />
                                         </div>
                                         <div>
-                                            <h3 className="font-semibold text-gray-900">Room Details</h3>
-                                            <p className="text-sm text-gray-600">Upload Excel file with room data</p>
+                                            <h3 className="font-semibold text-gray-900">Descriptive Rooms</h3>
+                                            <p className="text-sm text-gray-600">Upload Excel file</p>
                                         </div>
                                     </div>
                                     {roomFile && (
@@ -1688,29 +1768,63 @@ export function AdminDashboard() {
                                 </div>
 
                                 <label className="block">
-                                    <div className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${uploadStatus.rooms === 'uploaded'
+                                    <div className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${uploadStatus.rooms === 'uploaded'
                                         ? 'border-green-300 bg-green-50'
                                         : uploadStatus.rooms === 'error'
                                             ? 'border-red-300 bg-red-50'
-                                            : 'border-gray-300 hover:border-indigo-400 hover:bg-indigo-50'
+                                            : 'border-gray-300 hover:border-purple-400 hover:bg-purple-50'
                                         }`}>
-                                        <Upload className={`size-8 mx-auto mb-2 ${uploadStatus.rooms === 'uploaded' ? 'text-green-600' : 'text-gray-400'
+                                        <Upload className={`size-6 mx-auto mb-2 ${uploadStatus.rooms === 'uploaded' ? 'text-green-600' : 'text-gray-400'
                                             }`} />
                                         <p className="text-sm font-medium text-gray-700">
                                             {uploadStatus.rooms === 'uploaded'
                                                 ? `✓ ${roomFile?.name}`
-                                                : 'Drop file or click to upload'}
-                                        </p>
-                                        <p className="text-xs text-gray-500 mt-1">
-                                            Required columns: Class Room, Capacity
+                                                : 'Drop file or click'}
                                         </p>
                                     </div>
-                                    <input
-                                        type="file"
-                                        accept=".xlsx,.xls"
-                                        onChange={handleRoomUpload}
-                                        className="hidden"
-                                    />
+                                    <input type="file" accept=".xlsx,.xls" onChange={handleRoomUpload} className="hidden" />
+                                </label>
+                            </div>
+
+                            {/* MCQ Room Details Upload */}
+                            <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
+                                <div className="flex items-center justify-between mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <div className="p-2 bg-orange-100 rounded-lg">
+                                            <FileSpreadsheet className="size-6 text-orange-600" />
+                                        </div>
+                                        <div>
+                                            <h3 className="font-semibold text-gray-900">MCQ Rooms</h3>
+                                            <p className="text-sm text-gray-600">Upload Excel file</p>
+                                        </div>
+                                    </div>
+                                    {mcqRoomFile && (
+                                        <button
+                                            onClick={(e) => { e.preventDefault(); setMcqRoomFile(null); setUploadStatus(p => ({ ...p, mcqRooms: 'ready' })); }}
+                                            className="text-gray-400 hover:text-red-500 transition-colors"
+                                            title="Remove file"
+                                        >
+                                            <Trash2 className="size-4" />
+                                        </button>
+                                    )}
+                                </div>
+
+                                <label className="block">
+                                    <div className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${uploadStatus.mcqRooms === 'uploaded'
+                                        ? 'border-green-300 bg-green-50'
+                                        : uploadStatus.mcqRooms === 'error'
+                                            ? 'border-red-300 bg-red-50'
+                                            : 'border-gray-300 hover:border-orange-400 hover:bg-orange-50'
+                                        }`}>
+                                        <Upload className={`size-6 mx-auto mb-2 ${uploadStatus.mcqRooms === 'uploaded' ? 'text-green-600' : 'text-gray-400'
+                                            }`} />
+                                        <p className="text-sm font-medium text-gray-700">
+                                            {uploadStatus.mcqRooms === 'uploaded'
+                                                ? `✓ ${mcqRoomFile?.name}`
+                                                : 'Drop file or click'}
+                                        </p>
+                                    </div>
+                                    <input type="file" accept=".xlsx,.xls" onChange={handleMcqRoomUpload} className="hidden" />
                                 </label>
                             </div>
                         </motion.div>
@@ -1778,36 +1892,60 @@ export function AdminDashboard() {
                 {activeTab === 'courses' && seatingGenerated && (
                     <>
                         {/* Summary Section */}
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: 0.1 }}
-                            className="grid md:grid-cols-3 gap-6 mb-6"
-                        >
-                            <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
-                                <p className="text-gray-600 text-sm mb-2">Allocated Students</p>
-                                <p className="text-4xl font-bold text-indigo-600">
-                                    {summary.totalStudents} <span className="text-sm font-normal text-gray-500">/ {summary.totalInputStudents || summary.totalStudents}</span>
-                                </p>
-                                {summary.unallocatedCount ? (
-                                    <p className="mt-2 text-xs text-red-600 font-medium">{summary.unallocatedCount} unallocated</p>
-                                ) : (
-                                    <p className="mt-2 text-xs text-green-600 font-medium">All allocated ✓</p>
-                                )}
-                            </div>
-                            <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
-                                <p className="text-gray-600 text-sm mb-2">Total Rooms Used</p>
-                                <p className="text-4xl font-bold text-violet-600">{summary.totalRooms}</p>
-                                <p className="mt-2 text-xs text-gray-500">Across all sessions</p>
-                            </div>
-                            <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
-                                <p className="text-gray-600 text-sm mb-2">Total Courses</p>
-                                <p className="text-4xl font-bold text-purple-600">{summary.totalCourses}</p>
-                                {summary.utilizationRate && (
-                                    <p className="mt-2 text-xs text-indigo-600 font-medium">{summary.utilizationRate}% Capacity used</p>
-                                )}
-                            </div>
-                        </motion.div>
+                        {(() => {
+                            let displayStudents = summary.totalStudents;
+                            let displayInputStudents = summary.totalInputStudents || summary.totalStudents;
+                            let displayRooms = summary.totalRooms;
+                            let displayCourses = summary.totalCourses;
+
+                            if (breakdownModeFilter !== 'ALL') {
+                                const isTargetMCQ = breakdownModeFilter === 'MCQ';
+                                const targetRooms = rooms.filter(r => isTargetMCQ ? r.examMode === 'MCQ' : (r.examMode || 'NORMAL') === 'NORMAL');
+                                displayRooms = targetRooms.length;
+                                displayStudents = targetRooms.reduce((sum, r) => sum + r.seats.length, 0);
+                                
+                                const targetCoursesList = courseStats.filter((course) => {
+                                    const isMCQCourse = rooms.some(r => r.examMode === 'MCQ' && r.seats.some(s => s.course === course.courseCode));
+                                    const isNormalCourse = rooms.some(r => (r.examMode || 'NORMAL') === 'NORMAL' && r.seats.some(s => s.course === course.courseCode));
+                                    return isTargetMCQ ? isMCQCourse : isNormalCourse;
+                                });
+                                displayCourses = targetCoursesList.length;
+                                displayInputStudents = targetCoursesList.reduce((sum, c) => sum + (c.totalStudents || c.allocatedSeats), 0);
+                            }
+
+                            return (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: 0.1 }}
+                                    className="grid md:grid-cols-3 gap-6 mb-6"
+                                >
+                                    <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
+                                        <p className="text-gray-600 text-sm mb-2">Allocated Students</p>
+                                        <p className="text-4xl font-bold text-indigo-600">
+                                            {displayStudents} <span className="text-sm font-normal text-gray-500">/ {displayInputStudents}</span>
+                                        </p>
+                                        {breakdownModeFilter === 'ALL' && summary.unallocatedCount ? (
+                                            <p className="mt-2 text-xs text-red-600 font-medium">{summary.unallocatedCount} unallocated</p>
+                                        ) : (
+                                            <p className="mt-2 text-xs text-green-600 font-medium">All allocated ✓</p>
+                                        )}
+                                    </div>
+                                    <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
+                                        <p className="text-gray-600 text-sm mb-2">Total Rooms Used</p>
+                                        <p className="text-4xl font-bold text-violet-600">{displayRooms}</p>
+                                        <p className="mt-2 text-xs text-gray-500">Across all sessions</p>
+                                    </div>
+                                    <div className="bg-white/70 backdrop-blur-xl rounded-2xl shadow-lg border border-indigo-100 p-6">
+                                        <p className="text-gray-600 text-sm mb-2">Total Courses</p>
+                                        <p className="text-4xl font-bold text-purple-600">{displayCourses}</p>
+                                        {breakdownModeFilter === 'ALL' && summary.utilizationRate && (
+                                            <p className="mt-2 text-xs text-indigo-600 font-medium">{summary.utilizationRate}% Capacity used</p>
+                                        )}
+                                    </div>
+                                </motion.div>
+                            );
+                        })()}
 
                         {/* Warnings Section */}
                         {warnings.length > 0 && (
@@ -1880,13 +2018,53 @@ export function AdminDashboard() {
                             transition={{ delay: 0.35 }}
                             className="mb-8"
                         >
-                            <h2 className="text-xl font-bold text-gray-900 mb-6 flex items-center gap-2">
-                                <FileSpreadsheet className="size-5 text-indigo-600" />
-                                Allocated Courses
-                            </h2>
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                                <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                                    <FileSpreadsheet className="size-5 text-indigo-600" />
+                                    Allocated Courses
+                                </h2>
+                                
+                                <div className="flex bg-gray-100 p-1 rounded-lg">
+                                    <button
+                                        onClick={() => setBreakdownModeFilter('ALL')}
+                                        className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'ALL'
+                                            ? 'bg-white text-indigo-600 shadow-sm'
+                                            : 'text-gray-500 hover:text-gray-700'
+                                            }`}
+                                    >
+                                        <Filter className="size-3" />
+                                        All Modes
+                                    </button>
+                                    <button
+                                        onClick={() => setBreakdownModeFilter('NORMAL')}
+                                        className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'NORMAL'
+                                            ? 'bg-white text-indigo-600 shadow-sm'
+                                            : 'text-gray-500 hover:text-gray-700'
+                                            }`}
+                                    >
+                                        Descriptive
+                                    </button>
+                                    <button
+                                        onClick={() => setBreakdownModeFilter('MCQ')}
+                                        className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'MCQ'
+                                            ? 'bg-white text-pink-600 shadow-sm'
+                                            : 'text-gray-500 hover:text-gray-700'
+                                            }`}
+                                    >
+                                        MCQ
+                                    </button>
+                                </div>
+                            </div>
 
                             <div className="space-y-4">
-                                {courseStats.map((course) => {
+                                {courseStats.filter((course) => {
+                                    if (breakdownModeFilter === 'ALL') return true;
+                                    const isMCQCourse = rooms.some(r => r.examMode === 'MCQ' && r.seats.some(s => s.course === course.courseCode));
+                                    const isNormalCourse = rooms.some(r => (r.examMode || 'NORMAL') === 'NORMAL' && r.seats.some(s => s.course === course.courseCode));
+                                    if (breakdownModeFilter === 'MCQ') return isMCQCourse;
+                                    if (breakdownModeFilter === 'NORMAL') return isNormalCourse;
+                                    return true;
+                                }).map((course) => {
                                     // Calculate room breakdown for this course
                                     const courseRooms: Record<string, number> = {};
                                     rooms.forEach(r => {
@@ -1981,11 +2159,12 @@ export function AdminDashboard() {
                         transition={{ delay: 0.5 }}
                         className="space-y-6"
                     >
-                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                            <div className="flex items-center gap-4">
-                                <h2 className="text-xl font-semibold text-gray-900">Seating Preview</h2>
+                        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                            <div className="flex flex-col gap-3">
+                                <div className="flex flex-wrap items-center gap-4">
+                                    <h2 className="text-xl font-semibold text-gray-900">Seating Preview</h2>
 
-                                {/* Session Filter Buttons */}
+                                    {/* Session Filter Buttons */}
                                 <div className="flex bg-gray-100 p-1 rounded-lg">
                                     <button
                                         onClick={() => setSessionFilter('ALL')}
@@ -2084,6 +2263,69 @@ export function AdminDashboard() {
                                         </button>
                                     </div>
                                 )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-4">
+                                    {/* Exam Mode Filter Buttons */}
+                                    <div className="flex bg-gray-100 p-1 rounded-lg">
+                                        <button
+                                            onClick={() => setExamModeFilter('ALL')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${examModeFilter === 'ALL'
+                                                ? 'bg-white text-indigo-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            <Filter className="size-3" />
+                                            All Modes
+                                        </button>
+                                        <button
+                                            onClick={() => setExamModeFilter('NORMAL')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${examModeFilter === 'NORMAL'
+                                                ? 'bg-white text-indigo-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            Descriptive
+                                        </button>
+                                        <button
+                                            onClick={() => setExamModeFilter('MCQ')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${examModeFilter === 'MCQ'
+                                                ? 'bg-white text-pink-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            MCQ
+                                        </button>
+                                    </div>
+
+                                    {/* Separate Counts Display */}
+                                    {(() => {
+                                        const visibleRooms = rooms.filter(room => isRoomInSession(room, sessionFilter));
+                                        const normalRoomsList = visibleRooms.filter(r => (r.examMode || 'NORMAL') === 'NORMAL');
+                                        const mcqRoomsList = visibleRooms.filter(r => r.examMode === 'MCQ');
+                                        
+                                        const normalAlloc = normalRoomsList.reduce((acc, r) => acc + r.seats.length, 0);
+                                        const normalTotal = normalRoomsList.reduce((acc, r) => acc + r.totalSeats, 0);
+                                        
+                                        const mcqAlloc = mcqRoomsList.reduce((acc, r) => acc + r.seats.length, 0);
+                                        const mcqTotal = mcqRoomsList.reduce((acc, r) => acc + r.totalSeats, 0);
+
+                                        return (
+                                            <div className="flex flex-wrap gap-2 text-xs font-medium">
+                                                <div className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-md border border-indigo-100 flex items-center gap-1">
+                                                    <span className="font-bold">DESCRIPTIVE:</span>
+                                                    <span>{normalAlloc} / {normalTotal} seats</span>
+                                                    <span className="text-indigo-500 ml-1">({normalRoomsList.length} rooms)</span>
+                                                </div>
+                                                <div className="px-3 py-1.5 bg-pink-50 text-pink-700 rounded-md border border-pink-100 flex items-center gap-1">
+                                                    <span className="font-bold">MCQ:</span>
+                                                    <span>{mcqAlloc} / {mcqTotal} seats</span>
+                                                    <span className="text-pink-500 ml-1">({mcqRoomsList.length} rooms)</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
+                                </div>
                             </div>
 
                             <div className="flex gap-2">
@@ -2113,6 +2355,7 @@ export function AdminDashboard() {
 
                         {rooms
                             .filter(room => isRoomInSession(room, sessionFilter))
+                            .filter(room => examModeFilter === 'ALL' || (room.examMode || 'NORMAL') === examModeFilter)
                             .map((room) => {
                                 const uniqueCourses = Array.from(new Set(room.seats.map(s => s.course))).sort();
 
@@ -2139,18 +2382,24 @@ export function AdminDashboard() {
                                                 <h3 className={`text-lg font-bold flex items-center gap-3 ${isFN ? 'text-sky-900' : isAN ? 'text-orange-900' : 'text-gray-900'
                                                     }`}>
                                                     Room {room.roomNumber}
-                                                    {room.session && (
-                                                        <span className={`text-xs font-bold px-3 py-1 rounded-full border flex items-center gap-1 ${room.session === 'FN'
-                                                            ? 'bg-sky-100 text-sky-700 border-sky-200'
-                                                            : 'bg-orange-100 text-orange-700 border-orange-200'
+                                                        {room.session && (
+                                                            <span className={`text-xs font-bold px-3 py-1 rounded-full border flex items-center gap-1 ${room.session === 'FN'
+                                                                ? 'bg-sky-100 text-sky-700 border-sky-200'
+                                                                : 'bg-orange-100 text-orange-700 border-orange-200'
+                                                                }`}>
+                                                                {room.displaySession ? (room.displaySession.includes('FN') ? '☀️ ' : '🌅 ') + room.displaySession : (room.session === 'FN' ? '☀️ FORENOON' : '🌅 AFTERNOON')}
+                                                            </span>
+                                                        )}
+                                                        <span className={`text-xs font-bold px-3 py-1 rounded-full border flex items-center gap-1 ${room.examMode === 'MCQ'
+                                                            ? 'bg-pink-100 text-pink-700 border-pink-200'
+                                                            : 'bg-indigo-100 text-indigo-700 border-indigo-200'
                                                             }`}>
-                                                            {room.displaySession ? (room.displaySession.includes('FN') ? '☀️ ' : '🌅 ') + room.displaySession : (room.session === 'FN' ? '☀️ FORENOON' : '🌅 AFTERNOON')}
+                                                            {(!room.examMode || room.examMode === 'NORMAL') ? 'DESCRIPTIVE' : room.examMode}
                                                         </span>
-                                                    )}
-                                                </h3>
-                                                <p className="text-sm text-gray-600 mt-1">
-                                                    Total Seats: {room.seats.length} | Allocated: {room.seats.length}
-                                                </p>
+                                                    </h3>
+                                                    <p className="text-sm text-gray-600 mt-1">
+                                                        Total Seats: {room.seats.length} | Allocated: {room.seats.length}
+                                                    </p>
                                             </div>
                                         </div>
 
