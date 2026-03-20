@@ -137,3 +137,22 @@ export async function searchSeatingPlan(date: string, type: string): Promise<Vie
 
     return response.json();
 }
+
+export async function adminLogin(email: string, password: string): Promise<{ success: boolean; message: string }> {
+    const response = await fetch(`${API_URL}/admin/login`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
+    });
+
+    if (!response.ok) {
+        if (response.status === 401) {
+            return { success: false, message: 'Invalid credentials' };
+        }
+        throw new Error('Login failed on server');
+    }
+
+    return response.json();
+}

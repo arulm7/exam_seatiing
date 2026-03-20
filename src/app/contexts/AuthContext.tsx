@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
+import { adminLogin } from '../services/api';
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -18,15 +19,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const login = async (email: string, password: string): Promise<boolean> => {
-    // Mock authentication - in real app, call backend
-    if (email === 'admin@saveetha.com' && password === 'admin@123') {
-      setIsAuthenticated(true);
-      setIsAdmin(true);
-      localStorage.setItem('isAuthenticated', 'true');
-      localStorage.setItem('isAdmin', 'true');
-      return true;
+    try {
+      const response = await adminLogin(email, password);
+      
+      if (response.success) {
+        setIsAuthenticated(true);
+        setIsAdmin(true);
+        localStorage.setItem('isAuthenticated', 'true');
+        localStorage.setItem('isAdmin', 'true');
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Login error:', error);
+      return false;
     }
-    return false;
   };
 
   const logout = () => {

@@ -23,7 +23,7 @@ export function AdminLogin() {
     if (success) {
       navigate('/admin');
     } else {
-      setError('Invalid credentials. Use admin@university.edu / admin');
+      setError('Invalid email or password.');
     }
   };
 

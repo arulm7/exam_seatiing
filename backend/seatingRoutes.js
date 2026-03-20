@@ -683,7 +683,7 @@ router.post(
             if (!courseNameMap[courseCode]) courseNameMap[courseCode] = courseName;
           }
           if (courseCode) {
-             totalStudentsByCourse[courseCode] = (totalStudentsByCourse[courseCode] || 0) + 1;
+            totalStudentsByCourse[courseCode] = (totalStudentsByCourse[courseCode] || 0) + 1;
           }
         });
 
