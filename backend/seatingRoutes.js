@@ -1160,4 +1160,46 @@ router.delete("/clear-seating", async (req, res) => {
   }
 });
 
+/* ======================================================
+   PUT: UPDATE ROOM NUMBER
+   ====================================================== */
+router.put("/update-room", async (req, res) => {
+  try {
+    const { oldRoomNumber, newRoomNumber, date, type, session, examMode } = req.body;
+
+    if (!oldRoomNumber || !newRoomNumber || !date || !type) {
+      return res.status(400).json({ message: "Required fields (oldRoomNumber, newRoomNumber, date, type) are missing" });
+    }
+
+    // Build the query dynamically based on whether session and examMode are provided
+    let query = "UPDATE exam_allocation SET room = ? WHERE room = ? AND exam_date = ? AND exam_type = ?";
+    let params = [newRoomNumber, oldRoomNumber, date, type];
+
+    if (session) {
+      // session in db might be 'FN', 'AN', etc. 
+      // The frontend passes the raw session string or mapSession
+      query += " AND session = ?";
+      params.push(session);
+    }
+
+    if (examMode) {
+      query += " AND exam_mode = ?";
+      params.push(examMode);
+    }
+
+    // Update the room in the database
+    const [result] = await db.promise().query(query, params);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "No records found to update" });
+    }
+
+    res.json({ success: true, message: `Room updated successfully` });
+  } catch (err) {
+    console.error("UPDATE ROOM ERROR:", err);
+    res.status(500).json({ message: "Failed to update room number" });
+  }
+});
+
+
 module.exports = router;

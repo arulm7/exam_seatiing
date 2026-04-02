@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Upload, FileSpreadsheet, Users, Download, Printer, LayoutDashboard, Eye, List, Trash2, Calendar, Sun, Sunset, Filter, GraduationCap, FileText, PenTool } from 'lucide-react';
-import { generateSeatingPlan, fetchCurrentSeating, clearSeatingPlan, searchSeatingPlan } from '../services/api';
+import { Upload, FileSpreadsheet, Users, Download, Printer, LayoutDashboard, Eye, List, Trash2, Calendar, Sun, Sunset, Filter, GraduationCap, FileText, PenTool, Pencil, Check, X } from 'lucide-react';
+import { generateSeatingPlan, fetchCurrentSeating, clearSeatingPlan, searchSeatingPlan, updateRoomNumber } from '../services/api';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -133,6 +133,53 @@ export function AdminDashboard() {
     const [searchCategory, setSearchCategory] = useState<'university' | 'model' | 'other'>('university');
     const [searchResult, setSearchResult] = useState<string | null>(null);
     const [isInitialLoading, setIsInitialLoading] = useState(true);
+
+    // Edit Room State
+    const [editingRoom, setEditingRoom] = useState<string | null>(null);
+    const [tempRoomName, setTempRoomName] = useState<string>('');
+
+    const handleUpdateRoom = async (oldRoomNumber: string, session?: string, examMode?: string) => {
+        if (!tempRoomName || !tempRoomName.trim()) {
+            toast.error("Room number cannot be empty");
+            return;
+        }
+
+        const roomToUpdate = rooms.find(r => 
+            r.roomNumber === oldRoomNumber && 
+            r.session === session && 
+            (r.examMode || 'NORMAL') === (examMode || 'NORMAL')
+        );
+
+        if (tempRoomName === oldRoomNumber) {
+            setEditingRoom(null);
+            return;
+        }
+
+        try {
+            setLoading(true);
+            // We pass the displaySession (e.g. "FN (Session 1)") and examMode to the backend so it only updates those specific records
+            await updateRoomNumber(oldRoomNumber, tempRoomName, examDate, examType, session, examMode);
+            
+            // Update local state ONLY for that specific room/session/mode combination
+            setRooms(prevRooms => prevRooms.map(room => {
+                const roomSession = room.displaySession || room.session;
+                if (room.roomNumber === oldRoomNumber && 
+                    roomSession === session && 
+                    (room.examMode || 'NORMAL') === (examMode || 'NORMAL')) {
+                    return { ...room, roomNumber: tempRoomName };
+                }
+                return room;
+            }));
+
+            toast.success(`Room renamed to ${tempRoomName}`);
+            setEditingRoom(null);
+        } catch (err: any) {
+            toast.error(err.message || "Failed to update room number");
+        } finally {
+            setLoading(false);
+        }
+    };
+
 
     // Initialize default exam type
     useEffect(() => {
@@ -610,6 +657,9 @@ export function AdminDashboard() {
         printWindow.document.write(htmlContent);
         printWindow.document.close();
     };
+
+
+
 
     const handlePreviewDownloadPDF = () => {
         try {
@@ -2369,8 +2419,8 @@ export function AdminDashboard() {
 
                                 return (
                                     <div
-                                        key={room.roomNumber}
-                                        className={`backdrop-blur-xl rounded-2xl shadow-lg border p-6 transition-colors duration-300 ${isFN
+                                        key={`${room.roomNumber}-${room.displaySession || room.session}-${room.examMode || 'NORMAL'}`}
+                                        className={`backdrop-blur-xl rounded-2xl shadow-lg border p-6 transition-colors duration-300 group ${isFN
                                             ? 'bg-sky-50/80 border-sky-200'
                                             : isAN
                                                 ? 'bg-orange-50/80 border-orange-200'
@@ -2379,9 +2429,51 @@ export function AdminDashboard() {
                                     >
                                         <div className="flex items-center justify-between mb-6">
                                             <div>
-                                                <h3 className={`text-lg font-bold flex items-center gap-3 ${isFN ? 'text-sky-900' : isAN ? 'text-orange-900' : 'text-gray-900'
+                                <h3 className={`text-lg font-bold flex items-center gap-3 ${isFN ? 'text-sky-900' : isAN ? 'text-orange-900' : 'text-gray-900'
                                                     }`}>
-                                                    Room {room.roomNumber}
+                                                    {(() => {
+                                                        const currentRoomId = `${room.roomNumber}|${room.displaySession || room.session}|${room.examMode || 'NORMAL'}`;
+                                                        return editingRoom === currentRoomId ? (
+                                                            <div className="flex items-center gap-2">
+                                                                <input
+                                                                    type="text"
+                                                                    value={tempRoomName}
+                                                                    onChange={(e) => setTempRoomName(e.target.value)}
+                                                                    className="px-2 py-1 rounded border border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium w-40"
+                                                                    autoFocus
+                                                                    onKeyDown={(e) => {
+                                                                        if (e.key === 'Enter') handleUpdateRoom(room.roomNumber, room.displaySession || room.session, room.examMode);
+                                                                        if (e.key === 'Escape') setEditingRoom(null);
+                                                                    }}
+                                                                />
+                                                                <button 
+                                                                    onClick={() => handleUpdateRoom(room.roomNumber, room.displaySession || room.session, room.examMode)}
+                                                                    className="p-1 hover:bg-green-100 rounded-full text-green-600 transition-colors"
+                                                                >
+                                                                    <Check className="size-4" />
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => setEditingRoom(null)}
+                                                                    className="p-1 hover:bg-red-100 rounded-full text-red-600 transition-colors"
+                                                                >
+                                                                    <X className="size-4" />
+                                                                </button>
+                                                            </div>
+                                                        ) : (
+                                                            <>
+                                                                Room {room.roomNumber}
+                                                                <button 
+                                                                    onClick={() => {
+                                                                        setEditingRoom(currentRoomId);
+                                                                        setTempRoomName(room.roomNumber);
+                                                                    }}
+                                                                    className="p-1.5 hover:bg-white/50 rounded-lg text-gray-500 hover:text-indigo-600 transition-all cursor-pointer opacity-0 group-hover:opacity-100"
+                                                                >
+                                                                    <Pencil className="size-3.5" />
+                                                                </button>
+                                                            </>
+                                                        );
+                                                    })()}
                                                         {room.session && (
                                                             <span className={`text-xs font-bold px-3 py-1 rounded-full border flex items-center gap-1 ${room.session === 'FN'
                                                                 ? 'bg-sky-100 text-sky-700 border-sky-200'

@@ -156,3 +156,21 @@ export async function adminLogin(email: string, password: string): Promise<{ suc
 
     return response.json();
 }
+
+export async function updateRoomNumber(oldRoomNumber: string, newRoomNumber: string, date: string, type: string, session?: string, examMode?: string): Promise<{ success: boolean; message: string }> {
+    const response = await fetch(`${API_URL}/update-room`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ oldRoomNumber, newRoomNumber, date, type, session, examMode }),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to update room number');
+    }
+
+    return response.json();
+}
+
