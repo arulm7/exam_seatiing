@@ -442,14 +442,26 @@ export function AdminDashboard() {
 
     const getExportData = () => {
         const headers = ['S.No', 'Course Code', 'Course Name', 'Exam Mode', 'Total', 'Allocated', 'Unallocated', 'Room Breakdown'];
-        const rows = courseStats.map((course, index) => {
+        
+        const filteredRooms = rooms.filter(r => {
+            const modeMatch = breakdownModeFilter === 'ALL' ? true : breakdownModeFilter === 'MCQ' ? r.examMode === 'MCQ' : (r.examMode || 'NORMAL') === 'NORMAL';
+            const sessionMatch = isRoomInSession(r, sessionFilter);
+            return modeMatch && sessionMatch;
+        });
+
+        const rows = courseStats.filter((course) => {
+            return filteredRooms.some(r => r.seats.some(s => s.course === course.courseCode));
+        }).map((course, index) => {
             const courseRooms: string[] = [];
             let examMode = 'DESCRIPTIVE';
-            rooms.forEach(r => {
+            let allocatedInFiltered = 0;
+
+            filteredRooms.forEach(r => {
                 const count = r.seats.filter(s => s.course === course.courseCode).length;
                 if (count > 0) {
                     courseRooms.push(`${r.roomNumber} (${count})`);
                     if (r.examMode) examMode = r.examMode === 'NORMAL' ? 'DESCRIPTIVE' : r.examMode;
+                    allocatedInFiltered += count;
                 }
             });
 
@@ -459,8 +471,8 @@ export function AdminDashboard() {
                 course.courseName,
                 examMode,
                 (course.totalStudents || 0).toString(),
-                course.allocatedSeats.toString(),
-                (course.unallocated || 0).toString(),
+                allocatedInFiltered.toString(),
+                ((course.totalStudents || course.allocatedSeats || 0) - allocatedInFiltered).toString(),
                 courseRooms.join(', ')
             ];
         });
@@ -471,24 +483,27 @@ export function AdminDashboard() {
         const doc = new jsPDF();
         const { headers, rows } = getExportData();
 
+        // SIMATS banner_1
+        doc.addImage('/banner_1.png', 'PNG', 10, 5, 190, 30);
+
         // Enhanced PDF Header
         const title = summary.examType || 'University Exam Seating Plan';
         doc.setFontSize(22);
         doc.setTextColor(30, 27, 75); // Indigo-950
-        doc.text(title, 105, 20, { align: 'center' });
+        doc.text(title, 105, 45, { align: 'center' });
 
         doc.setFontSize(14);
         doc.setTextColor(79, 70, 229); // Indigo-600
-        doc.text('Allocated Courses Summary', 105, 28, { align: 'center' });
+        doc.text('Allocated Courses Summary', 105, 53, { align: 'center' });
 
         doc.setFontSize(10);
         doc.setTextColor(100, 100, 100);
-        doc.text(`Date: ${new Date(examDate).toLocaleDateString('en-IN')} | Total Students: ${summary.totalStudents} | Total Rooms: ${summary.totalRooms}`, 105, 35, { align: 'center' });
+        doc.text(`Date: ${new Date(examDate).toLocaleDateString('en-IN')} | Total Students: ${summary.totalStudents} | Total Rooms: ${summary.totalRooms}`, 105, 60, { align: 'center' });
 
         autoTable(doc, {
             head: [headers],
             body: rows,
-            startY: 45,
+            startY: 70,
             styles: { fontSize: 9, cellPadding: 3, halign: 'center' },
             headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold' },
             alternateRowStyles: { fillColor: [249, 250, 251] },
@@ -498,11 +513,13 @@ export function AdminDashboard() {
         // Add Warnings if any
         if (warnings && warnings.length > 0) {
             doc.addPage();
+            doc.addImage('/banner_1_1.png', 'PNG', 10, 5, 190, 30);
+            
             doc.setFontSize(16);
             doc.setTextColor(180, 83, 9); // Amber-700
-            doc.text('Allocation Warnings', 14, 20);
+            doc.text('Allocation Warnings', 14, 45);
 
-            let currentY = 30;
+            let currentY = 55;
             doc.setFontSize(10);
             doc.setTextColor(0, 0, 0);
             warnings.forEach(w => {
@@ -514,9 +531,11 @@ export function AdminDashboard() {
         // Add Unallocated Students if any
         if (unallocatedStudents && unallocatedStudents.length > 0) {
             doc.addPage();
+            doc.addImage('/banner_1.png', 'PNG', 10, 5, 190, 30);
+            
             doc.setFontSize(16);
             doc.setTextColor(220, 38, 38); // Red-600
-            doc.text('Unallocated Students', 14, 20);
+            doc.text('Unallocated Students', 14, 45);
 
             const unallocatedHeaders = [['Reg No', 'Name', 'Course', 'Session']];
             const unallocatedRows = unallocatedStudents.map(s => [s.regNo, s.name, s.course, s.session]);
@@ -524,7 +543,7 @@ export function AdminDashboard() {
             autoTable(doc, {
                 head: unallocatedHeaders,
                 body: unallocatedRows,
-                startY: 30,
+                startY: 55,
                 styles: { fontSize: 9 },
                 headStyles: { fillColor: [220, 38, 38] }
             });
@@ -605,6 +624,9 @@ export function AdminDashboard() {
           </style>
         </head>
         <body>
+          <div style="text-align: center; margin-bottom: 20px;">
+            <img src="/banner_1.png" style="width: 100%; max-width: 800px; height: auto;">
+          </div>
           <div class="summary-header">
             <h1>${summary.examType || 'University Exam Seating Plan'}</h1>
             <h2 style="color: #4f46e5; margin-top: -10px;">Allocated Courses Summary</h2>
@@ -667,69 +689,63 @@ export function AdminDashboard() {
             const startY = 40;
 
             rooms
-                .filter(room => isRoomInSession(room, sessionFilter))
+                .filter(room => {
+                    const sessionMatch = isRoomInSession(room, sessionFilter);
+                    const modeMatch = examModeFilter === 'ALL' ? true : examModeFilter === 'MCQ' ? room.examMode === 'MCQ' : (room.examMode || 'NORMAL') === 'NORMAL';
+                    return sessionMatch && modeMatch;
+                })
                 .forEach((room, index) => {
                     if (index > 0) doc.addPage();
 
-                    // Premium Layout Header
+                    // ADD banner_1
+                    doc.addImage('/banner_1.png', 'PNG', 10, 2, 190, 25); // Smaller and higher
 
                     // Helper to get Exam Time
                     const examTime = room.seats.find(s => s.time)?.time || 'N/A';
 
-                    // College Name
-                    doc.setFontSize(14);
-                    doc.setFont('helvetica', 'bold');
-                    doc.setTextColor(30, 27, 75); // indigo-950
-                    doc.text('Vel Tech High Tech Dr.Rangarajan Dr.Sakunthala Engineering College', 105, 15, { align: 'center' });
-
-                    doc.setFontSize(8);
-                    doc.setFont('helvetica', 'normal');
-                    doc.setTextColor(107, 114, 128); // gray-500
-                    doc.text('(Autonomous) | Approved by AICTE | Affiliated to Anna University, Chennai', 105, 20, { align: 'center' });
-
+                    // DEPARTMENT HEADER
                     doc.setFontSize(10);
                     doc.setFont('helvetica', 'bold');
                     doc.setTextColor(0, 0, 0);
-                    doc.text('DEPARTMENT OF CONTROLLER OF EXAMINATIONS', 105, 26, { align: 'center' });
-                    doc.line(70, 27, 140, 27); // Underline
+                    doc.text('DEPARTMENT OF CONTROLLER OF EXAMINATIONS', 105, 31, { align: 'center' }); 
+                    doc.line(70, 32, 140, 32); // Underline
 
                     // Exam Type
-                    doc.setFontSize(12);
+                    doc.setFontSize(11); // Slightly smaller
                     doc.setTextColor(79, 70, 229); // indigo-600
-                    doc.text((summary.examType || 'University Examination').toUpperCase(), 105, 34, { align: 'center' });
+                    doc.text((summary.examType || 'University Examination').toUpperCase(), 105, 38, { align: 'center' });                    // Info Box (Room, Session, Date, Time)
+                    doc.setFillColor(249, 250, 251); 
+                    doc.setDrawColor(229, 231, 235); 
+                    doc.roundedRect(20, 42, 170, 13, 2, 2, 'FD'); // Shorter box (16 -> 13)
 
-                    // Info Box (Room, Session, Date, Time)
-                    doc.setFillColor(249, 250, 251); // gray-50
-                    doc.setDrawColor(229, 231, 235); // gray-200
-                    doc.roundedRect(20, 38, 170, 16, 2, 2, 'FD');
+                    doc.setFontSize(8); // Smaller labels
+                    doc.setTextColor(107, 114, 128); 
+                    doc.text('ROOM NUMBER', 35, 46, { align: 'center' });
+                    doc.text('SESSION', 80, 46, { align: 'center' });
+                    doc.text('DATE', 125, 46, { align: 'center' });
+                    doc.text('TIME', 165, 46, { align: 'center' });
 
-                    doc.setFontSize(9);
-                    doc.setTextColor(107, 114, 128); // Label color
-                    doc.text('ROOM NUMBER', 35, 43, { align: 'center' });
-                    doc.text('SESSION', 80, 43, { align: 'center' });
-                    doc.text('DATE', 125, 43, { align: 'center' });
-                    doc.text('TIME', 165, 43, { align: 'center' });
-
-                    doc.setFontSize(11);
+                    doc.setFontSize(10); // Smaller values
                     doc.setFont('helvetica', 'bold');
-                    doc.setTextColor(17, 24, 39); // Value color
-                    doc.text(room.roomNumber, 35, 50, { align: 'center' });
+                    doc.setTextColor(17, 24, 39); 
+                    doc.text(room.roomNumber, 35, 52, { align: 'center' });
+;
 
                     // Clean up session text for PDF
                     const sessionText = room.displaySession ? room.displaySession.replace(/[()]/g, '') : (room.session || 'N/A');
-                    doc.text(sessionText, 80, 50, { align: 'center' });
+                    doc.text(sessionText, 80, 52, { align: 'center' });
 
-                    doc.text(new Date(examDate).toLocaleDateString('en-IN'), 125, 50, { align: 'center' });
-                    doc.text(examTime, 165, 50, { align: 'center' });
+                    doc.text(new Date(examDate).toLocaleDateString('en-IN'), 125, 52, { align: 'center' });
+                    doc.text(examTime, 165, 52, { align: 'center' });
 
                     // Separators
                     doc.setDrawColor(209, 213, 219);
-                    doc.line(55, 40, 55, 52);
-                    doc.line(100, 40, 100, 52);
-                    doc.line(145, 40, 145, 52);
+                    doc.line(55, 42, 55, 55);
+                    doc.line(100, 42, 100, 55);
+                    doc.line(145, 42, 145, 55);
 
                     // Meta Info
-                    doc.setFontSize(9);
+                    doc.setFontSize(8);
                     doc.setFont('helvetica', 'normal');
                     doc.setTextColor(55, 65, 81);
                     doc.text(`Capacity: ${room.totalSeats}   |   Allocated: ${room.seats.length}`, 105, 59, { align: 'center' });
@@ -737,11 +753,11 @@ export function AdminDashboard() {
                     // Horizontal Line (removed, layout flows into grid)
 
                     // Dynamic Scaling to fit any room size on a single A4 page
-                    const labelWidth = 12; // Space for row labels
+                    const labelWidth = 10; // Space for row labels
                     const labelHeight = 8; // Space for column labels
-                    const availableWidth = 170 - labelWidth; // 210 - 20 - 20 - labelWidth
-                    const availableHeight = 180 - labelHeight; // Reduced to ensure space for Course Breakdown table
-                    const currentGap = room.rows > 8 || room.columns > 5 ? 2 : 4;
+                    const availableWidth = 170 - labelWidth;
+                    const availableHeight = 150 - labelHeight; // Significantly reduced (180 -> 150)
+                    const currentGap = room.rows > 10 || room.columns > 6 ? 2 : 3;
 
                     const calcBoxWidth = (availableWidth - (room.columns - 1) * currentGap) / room.columns;
                     const calcBoxHeight = (availableHeight - (room.rows - 1) * currentGap) / room.rows;
@@ -754,7 +770,7 @@ export function AdminDashboard() {
                     const gridWidth = room.columns * finalBoxWidth + (room.columns - 1) * currentGap;
                     const gridHeight = room.rows * finalBoxHeight + (room.rows - 1) * currentGap;
                     const currentStartX = (210 - gridWidth - labelWidth) / 2 + labelWidth;
-                    const currentStartY = startY + labelHeight;
+                    const currentStartY = 68; // Shifted up (85 -> 68)
 
                     // Draw Column Labels
                     doc.setFontSize(8);
@@ -762,7 +778,7 @@ export function AdminDashboard() {
                     doc.setFont('helvetica', 'bold');
                     for (let c = 1; c <= room.columns; c++) {
                         const x = currentStartX + (c - 1) * (finalBoxWidth + currentGap);
-                        doc.text(`Col ${c}`, x + finalBoxWidth / 2, startY + labelHeight - 2, { align: 'center' });
+                        doc.text(`Col ${c}`, x + finalBoxWidth / 2, 68 - 2, { align: 'center' });
                     }
 
                     // Draw seats with row labels
@@ -896,7 +912,11 @@ export function AdminDashboard() {
         const wb = XLSX.utils.book_new();
 
         rooms
-            .filter(room => isRoomInSession(room, sessionFilter))
+            .filter(room => {
+                const sessionMatch = isRoomInSession(room, sessionFilter);
+                const modeMatch = examModeFilter === 'ALL' ? true : examModeFilter === 'MCQ' ? room.examMode === 'MCQ' : (room.examMode || 'NORMAL') === 'NORMAL';
+                return sessionMatch && modeMatch;
+            })
             .forEach(room => {
                 const wsData: any[][] = [];
 
@@ -964,7 +984,11 @@ export function AdminDashboard() {
         if (!printWindow) return;
 
         const roomGrids = rooms
-            .filter(room => isRoomInSession(room, sessionFilter))
+            .filter(room => {
+                const sessionMatch = isRoomInSession(room, sessionFilter);
+                const modeMatch = examModeFilter === 'ALL' ? true : examModeFilter === 'MCQ' ? room.examMode === 'MCQ' : (room.examMode || 'NORMAL') === 'NORMAL';
+                return sessionMatch && modeMatch;
+            })
             .map(room => {
                 // Generate column headers
                 const columnHeaders = Array.from({ length: room.columns }).map((_, idx) =>
@@ -1004,6 +1028,9 @@ export function AdminDashboard() {
 
                 return `
           <div class="room-container">
+            <div style="text-align: center; margin-bottom: 20px;">
+              <img src="/banner_1.png" style="width: 100%; max-width: 800px; height: auto;">
+            </div>
             <div class="room-header-premium">
                <!-- Exam Title / Type - Prominent Display -->
                <h1 style="font-size: 24px; font-weight: 800; margin: 0 0 15px 0; color: #1e1b4b; text-transform: uppercase; letter-spacing: 0.5px; text-align: center;">${summary.examType || 'University Examination'}</h1>
@@ -1172,23 +1199,25 @@ export function AdminDashboard() {
               
               /* Print optimizations to fit on one page */
               .room-container {
-                padding: 15px !important;
+                padding: 10px !important; // Reduced padding
                 min-height: auto !important;
-                height: 100vh;
+                height: auto; // Allow auto height to fit breakdown
+                max-height: 100vh;
                 page-break-after: always;
                 page-break-inside: avoid;
                 display: flex;
                 flex-direction: column;
-                justify-content: space-between;
+                justify-content: flex-start; // Start from top
               }
               
-              .room-header-premium { margin-bottom: 10px; padding-bottom: 10px; border-bottom-width: 2px; }
-              .room-header-premium h1 { font-size: 20px; }
-              .room-header-premium h2 { font-size: 16px; margin: 4px 0; }
-              .meta-info { font-size: 11px; margin-top: 5px; gap: 20px; }
+              .room-header-premium { margin-bottom: 5px; padding-bottom: 5px; border-bottom-width: 1px; }
+              .room-header-premium h1 { font-size: 16px; margin-bottom: 2px; }
+              .room-header-premium h2 { font-size: 14px; margin: 2px 0; }
+              .header-row { padding: 4px !important; margin-bottom: 4px !important; }
+              .meta-info { font-size: 10px; margin-top: 2px; gap: 15px; }
               
               /* Compact Seating Grid */
-              .seating-layout { flex-grow: 1; justify-content: flex-start; }
+              .seating-layout { flex-grow: 0; margin-bottom: 5px; } 
               .row-container { margin-bottom: 4px; gap: 4px; }
               .seats-row { gap: 4px; }
               .seat { 
@@ -1948,16 +1977,22 @@ export function AdminDashboard() {
                             let displayRooms = summary.totalRooms;
                             let displayCourses = summary.totalCourses;
 
-                            if (breakdownModeFilter !== 'ALL') {
+                            if (breakdownModeFilter !== 'ALL' || sessionFilter !== 'ALL') {
                                 const isTargetMCQ = breakdownModeFilter === 'MCQ';
-                                const targetRooms = rooms.filter(r => isTargetMCQ ? r.examMode === 'MCQ' : (r.examMode || 'NORMAL') === 'NORMAL');
+                                const isTargetNormal = breakdownModeFilter === 'NORMAL';
+                                
+                                const targetRooms = rooms.filter(r => {
+                                    const modeMatch = isTargetMCQ ? r.examMode === 'MCQ' : isTargetNormal ? (r.examMode || 'NORMAL') === 'NORMAL' : true;
+                                    const sessionMatch = isRoomInSession(r, sessionFilter);
+                                    return modeMatch && sessionMatch;
+                                });
+                                
                                 displayRooms = targetRooms.length;
                                 displayStudents = targetRooms.reduce((sum, r) => sum + r.seats.length, 0);
                                 
                                 const targetCoursesList = courseStats.filter((course) => {
-                                    const isMCQCourse = rooms.some(r => r.examMode === 'MCQ' && r.seats.some(s => s.course === course.courseCode));
-                                    const isNormalCourse = rooms.some(r => (r.examMode || 'NORMAL') === 'NORMAL' && r.seats.some(s => s.course === course.courseCode));
-                                    return isTargetMCQ ? isMCQCourse : isNormalCourse;
+                                    const inTargetRooms = targetRooms.some(r => r.seats.some(s => s.course === course.courseCode));
+                                    return inTargetRooms;
                                 });
                                 displayCourses = targetCoursesList.length;
                                 displayInputStudents = targetCoursesList.reduce((sum, c) => sum + (c.totalStudents || c.allocatedSeats), 0);
@@ -2074,50 +2109,87 @@ export function AdminDashboard() {
                                     Allocated Courses
                                 </h2>
                                 
-                                <div className="flex bg-gray-100 p-1 rounded-lg">
-                                    <button
-                                        onClick={() => setBreakdownModeFilter('ALL')}
-                                        className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'ALL'
-                                            ? 'bg-white text-indigo-600 shadow-sm'
-                                            : 'text-gray-500 hover:text-gray-700'
-                                            }`}
-                                    >
-                                        <Filter className="size-3" />
-                                        All Modes
-                                    </button>
-                                    <button
-                                        onClick={() => setBreakdownModeFilter('NORMAL')}
-                                        className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'NORMAL'
-                                            ? 'bg-white text-indigo-600 shadow-sm'
-                                            : 'text-gray-500 hover:text-gray-700'
-                                            }`}
-                                    >
-                                        Descriptive
-                                    </button>
-                                    <button
-                                        onClick={() => setBreakdownModeFilter('MCQ')}
-                                        className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'MCQ'
-                                            ? 'bg-white text-pink-600 shadow-sm'
-                                            : 'text-gray-500 hover:text-gray-700'
-                                            }`}
-                                    >
-                                        MCQ
-                                    </button>
+                                <div className="flex flex-wrap items-center gap-3">
+                                    {/* Session Filter for Breakdown */}
+                                    <div className="flex bg-gray-100 p-1 rounded-lg">
+                                        <button
+                                            onClick={() => setSessionFilter('ALL')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${sessionFilter === 'ALL'
+                                                ? 'bg-white text-indigo-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            <Filter className="size-3" />
+                                            All Sessions
+                                        </button>
+                                        <button
+                                            onClick={() => setSessionFilter('FN')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${sessionFilter === 'FN' || sessionFilter === '1' || sessionFilter === '2'
+                                                ? 'bg-white text-sky-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            <Sun className="size-3" />
+                                            FN
+                                        </button>
+                                        <button
+                                            onClick={() => setSessionFilter('AN')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${sessionFilter === 'AN' || sessionFilter === '3' || sessionFilter === '4'
+                                                ? 'bg-white text-orange-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            <Sunset className="size-3" />
+                                            AN
+                                        </button>
+                                    </div>
+
+                                    <div className="flex bg-gray-100 p-1 rounded-lg">
+                                        <button
+                                            onClick={() => setBreakdownModeFilter('ALL')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'ALL'
+                                                ? 'bg-white text-indigo-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            <Filter className="size-3" />
+                                            All Modes
+                                        </button>
+                                        <button
+                                            onClick={() => setBreakdownModeFilter('NORMAL')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'NORMAL'
+                                                ? 'bg-white text-indigo-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            Descriptive
+                                        </button>
+                                        <button
+                                            onClick={() => setBreakdownModeFilter('MCQ')}
+                                            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 ${breakdownModeFilter === 'MCQ'
+                                                ? 'bg-white text-pink-600 shadow-sm'
+                                                : 'text-gray-500 hover:text-gray-700'
+                                                }`}
+                                        >
+                                            MCQ
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
 
                             <div className="space-y-4">
                                 {courseStats.filter((course) => {
-                                    if (breakdownModeFilter === 'ALL') return true;
-                                    const isMCQCourse = rooms.some(r => r.examMode === 'MCQ' && r.seats.some(s => s.course === course.courseCode));
-                                    const isNormalCourse = rooms.some(r => (r.examMode || 'NORMAL') === 'NORMAL' && r.seats.some(s => s.course === course.courseCode));
-                                    if (breakdownModeFilter === 'MCQ') return isMCQCourse;
-                                    if (breakdownModeFilter === 'NORMAL') return isNormalCourse;
-                                    return true;
+                                    const inTargetRooms = rooms.some(r => {
+                                        const modeMatch = breakdownModeFilter === 'ALL' ? true : breakdownModeFilter === 'MCQ' ? r.examMode === 'MCQ' : (r.examMode || 'NORMAL') === 'NORMAL';
+                                        const sessionMatch = isRoomInSession(r, sessionFilter);
+                                        return modeMatch && sessionMatch && r.seats.some(s => s.course === course.courseCode);
+                                    });
+                                    return inTargetRooms;
                                 }).map((course) => {
                                     // Calculate room breakdown for this course
                                     const courseRooms: Record<string, number> = {};
                                     rooms.forEach(r => {
+                                        if (!isRoomInSession(r, sessionFilter)) return;
                                         const count = r.seats.filter(s => s.course === course.courseCode).length;
                                         if (count > 0) courseRooms[r.roomNumber] = count;
                                     });
